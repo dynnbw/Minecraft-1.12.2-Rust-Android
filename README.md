@@ -1,3 +1,6 @@
+注意！！！
+项目需要导入1.12.2的资源，可以使用本机的1.12.2资源，但推荐使用官方重写参照的MCP-1.12.2-main.zip，这个自动导入资源脚本成功运行率更高（https://1850640083.share.123pan.cn/123pan/RvAxvd-NIOgA），自行下载
+
 # Minecraft Java Edition 1.12.2 — Rust Semantic Port
 
 > 使用 Rust 对 Minecraft Java Edition 1.12.2 客户端进行语义级移植，并提供 Vulkan 与 OpenGL 双渲染后端。
