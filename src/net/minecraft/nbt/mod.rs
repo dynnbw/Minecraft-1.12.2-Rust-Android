@@ -1,0 +1,5 @@
+#[path = "NBTBase.rs"] pub mod NBTBase;
+#[path = "NBTTagCompound.rs"] pub mod NBTTagCompound;
+#[path = "NBTTagList.rs"] pub mod NBTTagList;
+#[path = "NBTUtil.rs"] pub mod NBTUtil;
+#[path = "CompressedStreamTools.rs"] pub mod CompressedStreamTools;

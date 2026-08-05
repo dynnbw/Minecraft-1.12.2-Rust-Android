@@ -1,0 +1,792 @@
+use crate::compat::Java::JavaRandom;
+use crate::net::minecraft::client::gui::FontRenderer::FontRenderer;
+use crate::net::minecraft::client::gui::GuiSubtitleOverlay::GuiSubtitleOverlay;
+use crate::net::minecraft::client::gui::GuiOverlayDebug::{DebugOverlayData, GuiOverlayDebug};
+use crate::net::minecraft::util::EnumHandSide::EnumHandSide;
+use crate::net::minecraft::world::GameType::GameType;
+use crate::net::minecraft::scoreboard::Scoreboard::Scoreboard;
+use crate::net::minecraft::scoreboard::ScorePlayerTeam::ScorePlayerTeam;
+
+/// Source texture used by a `GuiIngame` textured rectangle. The Vulkan
+/// backend resolves these logical MCP resources through the shared atlas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HudTexture {
+    Widgets,
+    Icons,
+    BossBars,
+}
+
+/// Backend-neutral equivalent of `Gui.drawTexturedModalRect` arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HudTexturedQuad {
+    pub texture: HudTexture,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub textureX: i32,
+    pub textureY: i32,
+    pub textureWidth: i32,
+    pub textureHeight: i32,
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HudSolidRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub color: u32,
+}
+
+impl HudSolidRect {
+    pub const fn new(x: i32, y: i32, width: i32, height: i32, color: u32) -> Self {
+        Self { x, y, width, height, color }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HudText {
+    pub text: String,
+    pub x: i32,
+    pub y: i32,
+    pub color: u32,
+    pub outline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HudScaledText {
+    pub text: HudText,
+    pub scale: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IngameHudFrame {
+    pub hotbar: Vec<HudTexturedQuad>,
+    pub crosshair: Vec<HudTexturedQuad>,
+    pub playerStats: Vec<HudTexturedQuad>,
+    pub experienceBar: Vec<HudTexturedQuad>,
+    pub experienceLevel: Option<HudText>,
+    pub scoreboardRectangles: Vec<HudSolidRect>,
+    pub scoreboardTexts: Vec<HudText>,
+    pub actionBar: Option<HudText>,
+    pub subtitleRectangles: Vec<HudSolidRect>,
+    pub subtitleTexts: Vec<HudText>,
+    pub titleTexts: Vec<HudScaledText>,
+    pub debugRectangles: Vec<HudSolidRect>,
+    pub debugTexts: Vec<HudText>,
+}
+
+/// MCP-facing owner for the ported `GuiIngame` overlay branches.
+///
+/// The health history fields are stateful in vanilla: damage and healing flash
+/// the previous value for 20 or 10 GUI ticks. Keeping them here rather than in
+/// Vulkan preserves the original class responsibility and update semantics.
+pub struct GuiIngame {
+    updateCounter: i32,
+    playerHealth: i32,
+    lastPlayerHealth: i32,
+    lastSystemTime: u64,
+    healthUpdateCounter: i64,
+    rand: JavaRandom,
+    titleFadeIn: i32,
+    titleDisplayTime: i32,
+    titleFadeOut: i32,
+    titlesTimer: i32,
+    displayedTitle: String,
+    displayedSubTitle: String,
+    overlayMessage: String,
+    overlayMessageTime: i32,
+    subtitleOverlay: GuiSubtitleOverlay,
+    overlayDebug: GuiOverlayDebug,
+}
+
+impl Default for GuiIngame {
+    fn default() -> Self {
+        Self {
+            updateCounter: 0,
+            playerHealth: 0,
+            lastPlayerHealth: 0,
+            lastSystemTime: 0,
+            healthUpdateCounter: 0,
+            rand: JavaRandom::new(0),
+            titleFadeIn: 10,
+            titleDisplayTime: 70,
+            titleFadeOut: 20,
+            titlesTimer: 0,
+            displayedTitle: String::new(),
+            displayedSubTitle: String::new(),
+            overlayMessage: String::new(),
+            overlayMessageTime: 0,
+            subtitleOverlay: GuiSubtitleOverlay::new(),
+            overlayDebug: GuiOverlayDebug::new(),
+        }
+    }
+}
+
+impl GuiIngame {
+    pub fn new() -> Self { Self::default() }
+
+    /// Ports the normal-player branches of `GuiIngame.renderHotbar`,
+    /// `renderAttackIndicator`, and `renderPlayerStats` from 1.12.2.
+    ///
+    /// Potion-specific heart/food variants, absorption, armor, mount health and
+    /// underwater air wait for their corresponding gameplay state. The normal
+    /// survival/adventure health and food paths below use the original texture
+    /// coordinates, seeded jitter and damage/healing flash counters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn buildFrameWithFont(
+        &mut self,
+        guiWidth: i32,
+        guiHeight: i32,
+        currentHotbarSlot: i32,
+        offhandNonEmpty: bool,
+        primaryHand: EnumHandSide,
+        gameType: GameType,
+        playerHealth: f32,
+        absorptionAmount: f32,
+        foodLevel: i32,
+        saturationLevel: f32,
+        experience: f32,
+        experienceLevel: i32,
+        xpBarCap: i32,
+        hurtResistantTime: i32,
+        playerTicksExisted: i32,
+        systemTimeMillis: u64,
+        scoreboard: Option<&Scoreboard>,
+        localPlayerName: &str,
+        actionBarText: Option<&str>,
+        actionBarAge: i32,
+        partialTicks: f32,
+        showSubtitles: bool,
+        listenerPosition: [f32; 3],
+        listenerYaw: f32,
+        listenerPitch: f32,
+        debugData: Option<&DebugOverlayData>,
+        fontRenderer: &FontRenderer,
+    ) -> IngameHudFrame {
+        let guiWidth = guiWidth.max(1);
+        let guiHeight = guiHeight.max(1);
+        self.updateCounter = playerTicksExisted;
+        let mut frame = IngameHudFrame::default();
+
+        if gameType != GameType::Spectator {
+            let center = guiWidth / 2;
+            frame.hotbar.push(HudTexturedQuad {
+                texture: HudTexture::Widgets,
+                x: center - 91,
+                y: guiHeight - 22,
+                width: 182,
+                height: 22,
+                textureX: 0,
+                textureY: 0,
+                textureWidth: 182,
+                textureHeight: 22,
+            });
+            frame.hotbar.push(HudTexturedQuad {
+                texture: HudTexture::Widgets,
+                x: center - 92 + currentHotbarSlot.clamp(0, 8) * 20,
+                y: guiHeight - 23,
+                width: 24,
+                height: 22,
+                textureX: 0,
+                textureY: 22,
+                textureWidth: 24,
+                textureHeight: 22,
+            });
+
+            if offhandNonEmpty {
+                // `EntityPlayer.getPrimaryHand().opposite()` selects the side
+                // occupied by the offhand frame in the original method.
+                let offhandSide = match primaryHand {
+                    EnumHandSide::Right => EnumHandSide::Left,
+                    EnumHandSide::Left => EnumHandSide::Right,
+                };
+                let (x, textureX) = if offhandSide == EnumHandSide::Left {
+                    (center - 120, 24)
+                } else {
+                    (center + 91, 53)
+                };
+                frame.hotbar.push(HudTexturedQuad {
+                    texture: HudTexture::Widgets,
+                    x,
+                    y: guiHeight - 23,
+                    width: 29,
+                    height: 24,
+                    textureX,
+                    textureY: 22,
+                    textureWidth: 29,
+                    textureHeight: 24,
+                });
+            }
+
+            frame.crosshair.push(HudTexturedQuad {
+                texture: HudTexture::Icons,
+                x: guiWidth / 2 - 7,
+                y: guiHeight / 2 - 7,
+                width: 16,
+                height: 16,
+                textureX: 0,
+                textureY: 0,
+                textureWidth: 16,
+                textureHeight: 16,
+            });
+        }
+
+        if gameType.isSurvivalOrAdventure() {
+            self.appendPlayerStats(
+                &mut frame.playerStats,
+                guiWidth,
+                guiHeight,
+                playerHealth,
+                absorptionAmount,
+                foodLevel,
+                saturationLevel,
+                hurtResistantTime,
+                systemTimeMillis,
+            );
+            self.appendExperience(
+                &mut frame,
+                guiWidth,
+                guiHeight,
+                experience,
+                experienceLevel,
+                xpBarCap,
+            );
+        }
+
+        if let Some(scoreboard) = scoreboard {
+            self.appendScoreboard(&mut frame, guiWidth, guiHeight, scoreboard, localPlayerName, fontRenderer);
+        }
+        let (overlayText, overlayRemaining) = if self.overlayMessageTime > 0 {
+            (Some(self.overlayMessage.as_str()), self.overlayMessageTime)
+        } else {
+            (actionBarText, 60 - actionBarAge.max(0))
+        };
+        if let Some(text) = overlayText {
+            let alpha = ((overlayRemaining * 255 / 20).min(255)).max(0);
+            if alpha > 8 {
+                frame.actionBar = Some(HudText {
+                    text: text.to_owned(),
+                    x: guiWidth / 2 - fontRenderer.get_string_width(text) / 2,
+                    y: guiHeight - 68 - 4,
+                    color: ((alpha as u32) << 24) | 0x00FF_FFFF,
+                    outline: false,
+                });
+            }
+        }
+
+        let subtitles = self.subtitleOverlay.buildFrame(
+            showSubtitles,
+            guiWidth,
+            guiHeight,
+            listenerPosition,
+            listenerYaw,
+            listenerPitch,
+            systemTimeMillis,
+            fontRenderer,
+        );
+        frame.subtitleRectangles = subtitles.rectangles;
+        frame.subtitleTexts = subtitles.texts;
+
+        if self.titlesTimer > 0 {
+            let remaining = self.titlesTimer as f32 - partialTicks.clamp(0.0, 1.0);
+            let mut alpha = 255_i32;
+            if self.titlesTimer > self.titleFadeOut + self.titleDisplayTime && self.titleFadeIn > 0 {
+                let elapsed = (self.titleFadeIn + self.titleDisplayTime + self.titleFadeOut) as f32 - remaining;
+                alpha = (elapsed * 255.0 / self.titleFadeIn as f32) as i32;
+            }
+            if self.titlesTimer <= self.titleFadeOut && self.titleFadeOut > 0 {
+                alpha = (remaining * 255.0 / self.titleFadeOut as f32) as i32;
+            }
+            alpha = alpha.clamp(0, 255);
+            if alpha > 8 {
+                let color = ((alpha as u32) << 24) | 0x00FF_FFFF;
+                frame.titleTexts.push(HudScaledText {
+                    scale: 4,
+                    text: HudText {
+                        text: self.displayedTitle.clone(),
+                        x: guiWidth / 2 - fontRenderer.get_string_width(&self.displayedTitle) * 2,
+                        y: guiHeight / 2 - 40,
+                        color, outline: true,
+                    },
+                });
+                frame.titleTexts.push(HudScaledText {
+                    scale: 2,
+                    text: HudText {
+                        text: self.displayedSubTitle.clone(),
+                        x: guiWidth / 2 - fontRenderer.get_string_width(&self.displayedSubTitle),
+                        y: guiHeight / 2 + 10,
+                        color, outline: true,
+                    },
+                });
+            }
+        }
+
+        if let Some(debugData) = debugData {
+            let debug = self.overlayDebug.buildFrame(guiWidth, debugData, fontRenderer);
+            frame.debugRectangles = debug.rectangles;
+            frame.debugTexts = debug.texts;
+        }
+
+        frame
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn buildFrame(
+        &mut self,
+        guiWidth: i32,
+        guiHeight: i32,
+        currentHotbarSlot: i32,
+        offhandNonEmpty: bool,
+        primaryHand: EnumHandSide,
+        gameType: GameType,
+        playerHealth: f32,
+        absorptionAmount: f32,
+        foodLevel: i32,
+        saturationLevel: f32,
+        experience: f32,
+        experienceLevel: i32,
+        xpBarCap: i32,
+        hurtResistantTime: i32,
+        playerTicksExisted: i32,
+        systemTimeMillis: u64,
+        scoreboard: Option<&Scoreboard>,
+        localPlayerName: &str,
+        actionBarText: Option<&str>,
+        actionBarAge: i32,
+    ) -> IngameHudFrame {
+        let fontRenderer = FontRenderer::test_metric_renderer();
+        self.buildFrameWithFont(
+            guiWidth, guiHeight, currentHotbarSlot, offhandNonEmpty, primaryHand, gameType,
+            playerHealth, absorptionAmount, foodLevel, saturationLevel, experience, experienceLevel, xpBarCap,
+            hurtResistantTime, playerTicksExisted, systemTimeMillis, scoreboard, localPlayerName,
+            actionBarText, actionBarAge, 0.0, false, [0.0; 3], 0.0, 0.0, None, &fontRenderer,
+        )
+    }
+
+    pub fn soundPlay(
+        &mut self,
+        subtitle: impl Into<String>,
+        location: [f32; 3],
+        systemTimeMillis: u64,
+    ) {
+        self.subtitleOverlay.soundPlay(subtitle, location, systemTimeMillis);
+    }
+
+    pub fn setDefaultTitlesTimes(&mut self) {
+        self.titleFadeIn = 10;
+        self.titleDisplayTime = 70;
+        self.titleFadeOut = 20;
+    }
+
+    pub fn updateTick(&mut self) {
+        if self.overlayMessageTime > 0 { self.overlayMessageTime -= 1; }
+        if self.titlesTimer > 0 {
+            self.titlesTimer -= 1;
+            if self.titlesTimer <= 0 {
+                self.displayedTitle.clear();
+                self.displayedSubTitle.clear();
+            }
+        }
+        self.updateCounter = self.updateCounter.wrapping_add(1);
+    }
+
+    pub fn setOverlayMessage(&mut self, message: impl Into<String>) {
+        self.overlayMessage = message.into();
+        self.overlayMessageTime = 60;
+    }
+
+    pub fn displayTitle(
+        &mut self,
+        title: Option<&str>,
+        subTitle: Option<&str>,
+        timeFadeIn: i32,
+        displayTime: i32,
+        timeFadeOut: i32,
+    ) {
+        if title.is_none() && subTitle.is_none() && timeFadeIn < 0 && displayTime < 0 && timeFadeOut < 0 {
+            self.displayedTitle.clear();
+            self.displayedSubTitle.clear();
+            self.titlesTimer = 0;
+        } else if let Some(title) = title {
+            self.displayedTitle = title.to_owned();
+            self.titlesTimer = self.titleFadeIn + self.titleDisplayTime + self.titleFadeOut;
+        } else if let Some(subTitle) = subTitle {
+            self.displayedSubTitle = subTitle.to_owned();
+        } else {
+            if timeFadeIn >= 0 { self.titleFadeIn = timeFadeIn; }
+            if displayTime >= 0 { self.titleDisplayTime = displayTime; }
+            if timeFadeOut >= 0 { self.titleFadeOut = timeFadeOut; }
+            if self.titlesTimer > 0 {
+                self.titlesTimer = self.titleFadeIn + self.titleDisplayTime + self.titleFadeOut;
+            }
+        }
+    }
+
+    fn appendScoreboard(
+        &self,
+        frame: &mut IngameHudFrame,
+        guiWidth: i32,
+        guiHeight: i32,
+        scoreboard: &Scoreboard,
+        localPlayerName: &str,
+        fontRenderer: &FontRenderer,
+    ) {
+        let Some(objective) = scoreboard.getSidebarObjective(localPlayerName) else { return; };
+        let mut scores = scoreboard.getSortedScores(objective)
+            .into_iter()
+            .filter(|score| !score.getPlayerName().starts_with('#'))
+            .collect::<Vec<_>>();
+        if scores.len() > 15 {
+            scores.drain(0..scores.len() - 15);
+        }
+        let mut maximumWidth = fontRenderer.get_string_width(objective.getDisplayName());
+        for score in &scores {
+            let name = ScorePlayerTeam::formatPlayerName(scoreboard.getPlayersTeam(score.getPlayerName()), score.getPlayerName());
+            let combined = format!("{name}: §c{}", score.getScorePoints());
+            maximumWidth = maximumWidth.max(fontRenderer.get_string_width(&combined));
+        }
+        let totalHeight = scores.len() as i32 * 9;
+        let bottom = guiHeight / 2 + totalHeight / 3;
+        let left = guiWidth - maximumWidth - 3;
+        let right = guiWidth - 1;
+        for (index, score) in scores.iter().enumerate() {
+            let row = index as i32 + 1;
+            let y = bottom - row * 9;
+            let name = ScorePlayerTeam::formatPlayerName(scoreboard.getPlayersTeam(score.getPlayerName()), score.getPlayerName());
+            let points = format!("§c{}", score.getScorePoints());
+            frame.scoreboardRectangles.push(HudSolidRect::new(left - 2, y, right - (left - 2), 9, 0x5000_0000));
+            frame.scoreboardTexts.push(HudText { text: name, x: left, y, color: 0x20FF_FFFF, outline: false });
+            frame.scoreboardTexts.push(HudText { text: points.clone(), x: right - fontRenderer.get_string_width(&points), y, color: 0x20FF_FFFF, outline: false });
+            if row == scores.len() as i32 {
+                frame.scoreboardRectangles.push(HudSolidRect::new(left - 2, y - 10, right - (left - 2), 9, 0x6000_0000));
+                frame.scoreboardRectangles.push(HudSolidRect::new(left - 2, y - 1, right - (left - 2), 1, 0x5000_0000));
+                let title = objective.getDisplayName();
+                frame.scoreboardTexts.push(HudText {
+                    text: title.to_owned(),
+                    x: left + maximumWidth / 2 - fontRenderer.get_string_width(title) / 2,
+                    y: y - 9,
+                    color: 0x20FF_FFFF,
+                    outline: false,
+                });
+            }
+        }
+    }
+
+    fn appendExperience(
+        &self,
+        frame: &mut IngameHudFrame,
+        guiWidth: i32,
+        guiHeight: i32,
+        experience: f32,
+        experienceLevel: i32,
+        xpBarCap: i32,
+    ) {
+        if xpBarCap > 0 {
+            let x = guiWidth / 2 - 91;
+            let y = guiHeight - 32 + 3;
+            frame.experienceBar.push(HudTexturedQuad {
+                texture: HudTexture::Icons,
+                x,
+                y,
+                width: 182,
+                height: 5,
+                textureX: 0,
+                textureY: 64,
+                textureWidth: 182,
+                textureHeight: 5,
+            });
+            let filled = (experience * 183.0) as i32;
+            if filled > 0 {
+                frame.experienceBar.push(HudTexturedQuad {
+                    texture: HudTexture::Icons,
+                    x,
+                    y,
+                    width: filled,
+                    height: 5,
+                    textureX: 0,
+                    textureY: 69,
+                    textureWidth: filled,
+                    textureHeight: 5,
+                });
+            }
+        }
+
+        if experienceLevel > 0 {
+            let text = experienceLevel.to_string();
+            let width = text.chars().count() as i32 * 6;
+            frame.experienceLevel = Some(HudText {
+                text,
+                x: (guiWidth - width) / 2,
+                y: guiHeight - 31 - 4,
+                color: 8_453_920,
+                outline: true,
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn appendPlayerStats(
+        &mut self,
+        output: &mut Vec<HudTexturedQuad>,
+        guiWidth: i32,
+        guiHeight: i32,
+        health: f32,
+        absorptionAmount: f32,
+        foodLevel: i32,
+        saturationLevel: f32,
+        hurtResistantTime: i32,
+        systemTimeMillis: u64,
+    ) {
+        let currentHealth = health.ceil().max(0.0) as i32;
+        let flash = self.healthUpdateCounter > self.updateCounter as i64
+            && (self.healthUpdateCounter - self.updateCounter as i64) / 3 % 2 == 1;
+
+        if currentHealth < self.playerHealth && hurtResistantTime > 0 {
+            self.lastSystemTime = systemTimeMillis;
+            self.healthUpdateCounter = (self.updateCounter + 20) as i64;
+        } else if currentHealth > self.playerHealth && hurtResistantTime > 0 {
+            self.lastSystemTime = systemTimeMillis;
+            self.healthUpdateCounter = (self.updateCounter + 10) as i64;
+        }
+
+        if systemTimeMillis.saturating_sub(self.lastSystemTime) > 1_000 {
+            self.playerHealth = currentHealth;
+            self.lastPlayerHealth = currentHealth;
+            self.lastSystemTime = systemTimeMillis;
+        }
+
+        self.playerHealth = currentHealth;
+        let previousHealth = self.lastPlayerHealth;
+        self.rand.set_seed((self.updateCounter.wrapping_mul(312_871)) as i64);
+
+        let foodLevel = foodLevel.clamp(0, 20);
+        let left = guiWidth / 2 - 91;
+        let right = guiWidth / 2 + 91;
+        let baseline = guiHeight - 39;
+
+        // MCP GuiIngame#renderPlayerStats. MAX_HEALTH is currently 20,
+        // while the networked absorption effect may add further heart slots.
+        let maxHealth = 20.0_f32;
+        let absorption = absorptionAmount.ceil().max(0.0) as i32;
+        let heartRows = (((maxHealth + absorption as f32) / 2.0).ceil() as i32 + 9) / 10;
+        let rowHeight = (10 - (heartRows - 2)).max(3);
+        let totalHeartSlots = ((maxHealth + absorption as f32) / 2.0).ceil() as i32;
+        let mut absorptionRemaining = absorption;
+
+        for heartIndex in (0..totalHeartSlots).rev() {
+            let row = (heartIndex + 1 + 9) / 10 - 1;
+            let mut y = baseline - row * rowHeight;
+            if currentHealth <= 4 {
+                y += self.rand.next_i32_bound(2);
+            }
+            let x = left + heartIndex.rem_euclid(10) * 8;
+            output.push(icon_quad(x, y, 16 + if flash { 9 } else { 0 }, 0));
+
+            if flash {
+                if heartIndex * 2 + 1 < previousHealth {
+                    output.push(icon_quad(x, y, 70, 0));
+                } else if heartIndex * 2 + 1 == previousHealth {
+                    output.push(icon_quad(x, y, 79, 0));
+                }
+            }
+
+            if absorptionRemaining > 0 {
+                if absorptionRemaining == absorption && absorption % 2 == 1 {
+                    output.push(icon_quad(x, y, 169, 0));
+                    absorptionRemaining -= 1;
+                } else {
+                    output.push(icon_quad(x, y, 160, 0));
+                    absorptionRemaining -= 2;
+                }
+            } else if heartIndex * 2 + 1 < currentHealth {
+                output.push(icon_quad(x, y, 52, 0));
+            } else if heartIndex * 2 + 1 == currentHealth {
+                output.push(icon_quad(x, y, 61, 0));
+            }
+        }
+
+        for foodIndex in 0..10 {
+            let mut y = baseline;
+            if saturationLevel <= 0.0
+                && self.updateCounter.rem_euclid(foodLevel * 3 + 1) == 0
+            {
+                y += self.rand.next_i32_bound(3) - 1;
+            }
+            let x = right - foodIndex * 8 - 9;
+            output.push(icon_quad(x, y, 16, 27));
+            if foodIndex * 2 + 1 < foodLevel {
+                output.push(icon_quad(x, y, 52, 27));
+            } else if foodIndex * 2 + 1 == foodLevel {
+                output.push(icon_quad(x, y, 61, 27));
+            }
+        }
+    }
+}
+
+const fn icon_quad(x: i32, y: i32, textureX: i32, textureY: i32) -> HudTexturedQuad {
+    HudTexturedQuad {
+        texture: HudTexture::Icons,
+        x,
+        y,
+        width: 9,
+        height: 9,
+        textureX,
+        textureY,
+        textureWidth: 9,
+        textureHeight: 9,
+    }
+}
+
+fn visible_width(text: &str) -> i32 {
+    let mut width = 0;
+    let mut formatting = false;
+    for character in text.chars() {
+        if formatting { formatting = false; continue; }
+        if character == '§' { formatting = true; } else { width += 6; }
+    }
+    width
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(gui: &mut GuiIngame, gameType: GameType) -> IngameHudFrame {
+        gui.buildFrame(
+            320,
+            180,
+            4,
+            false,
+            EnumHandSide::Right,
+            gameType,
+            20.0,
+            0.0,
+            20,
+            5.0,
+            0.0,
+            0,
+            7,
+            0,
+            1,
+            2_000,
+            None,
+            "",
+            None,
+            0,
+        )
+    }
+
+    #[test]
+    fn hotbar_coordinates_match_mcp_render_hotbar() {
+        let mut gui = GuiIngame::new();
+        let frame = frame(&mut gui, GameType::Survival);
+        assert_eq!(frame.hotbar[0], HudTexturedQuad {
+            texture: HudTexture::Widgets,
+            x: 69,
+            y: 158,
+            width: 182,
+            height: 22,
+            textureX: 0,
+            textureY: 0,
+            textureWidth: 182,
+            textureHeight: 22,
+        });
+        assert_eq!(frame.hotbar[1].x, 148);
+        assert_eq!(frame.hotbar[1].y, 157);
+        assert_eq!(frame.crosshair[0].x, 153);
+        assert_eq!(frame.crosshair[0].y, 83);
+    }
+
+    #[test]
+    fn normal_health_and_food_coordinates_match_render_player_stats() {
+        let mut gui = GuiIngame::new();
+        let frame = frame(&mut gui, GameType::Survival);
+        assert!(frame.playerStats.contains(&icon_quad(69, 141, 16, 0)));
+        assert!(frame.playerStats.contains(&icon_quad(69, 141, 52, 0)));
+        assert!(frame.playerStats.contains(&icon_quad(242, 141, 16, 27)));
+        assert!(frame.playerStats.contains(&icon_quad(242, 141, 52, 27)));
+    }
+
+    #[test]
+    fn absorption_uses_vanilla_yellow_heart_uvs() {
+        let mut gui = GuiIngame::new();
+        let frame = gui.buildFrame(
+            320, 180, 0, false, EnumHandSide::Right, GameType::Survival,
+            20.0, 4.0, 20, 5.0, 0.0, 0, 7, 0, 1, 2_000,
+            None, "", None, 0,
+        );
+        assert!(frame.playerStats.iter().any(|quad| quad.textureX == 160 && quad.textureY == 0));
+    }
+
+    #[test]
+    fn offhand_frame_uses_primary_hand_opposite() {
+        let mut gui = GuiIngame::new();
+        let rightHanded = gui.buildFrame(
+            320, 180, 0, true, EnumHandSide::Right, GameType::Survival,
+            20.0, 0.0, 20, 5.0, 0.0, 0, 7, 0, 1, 2_000,
+            None, "", None, 0,
+        );
+        assert_eq!(rightHanded.hotbar[2].x, 40);
+        assert_eq!(rightHanded.hotbar[2].textureX, 24);
+
+        let leftHanded = gui.buildFrame(
+            320, 180, 0, true, EnumHandSide::Left, GameType::Survival,
+            20.0, 0.0, 20, 5.0, 0.0, 0, 7, 0, 2, 2_050,
+            None, "", None, 0,
+        );
+        assert_eq!(leftHanded.hotbar[2].x, 251);
+        assert_eq!(leftHanded.hotbar[2].textureX, 53);
+    }
+
+    #[test]
+    fn spectator_branch_does_not_emit_normal_player_hud() {
+        let mut gui = GuiIngame::new();
+        let frame = frame(&mut gui, GameType::Spectator);
+        assert!(frame.hotbar.is_empty());
+        assert!(frame.crosshair.is_empty());
+        assert!(frame.playerStats.is_empty());
+    }
+
+    #[test]
+    fn experience_bar_and_level_match_mcp_geometry() {
+        let mut gui = GuiIngame::new();
+        let frame = gui.buildFrame(
+            320, 180, 0, false, EnumHandSide::Right, GameType::Survival,
+            20.0, 0.0, 20, 5.0, 0.5, 12, 31, 0, 1, 2_000,
+            None, "", None, 0,
+        );
+        assert_eq!(frame.experienceBar[0], HudTexturedQuad {
+            texture: HudTexture::Icons,
+            x: 69,
+            y: 151,
+            width: 182,
+            height: 5,
+            textureX: 0,
+            textureY: 64,
+            textureWidth: 182,
+            textureHeight: 5,
+        });
+        assert_eq!(frame.experienceBar[1].width, 91);
+        assert_eq!(frame.experienceBar[1].textureY, 69);
+        assert_eq!(frame.experienceLevel, Some(HudText {
+            text: "12".to_owned(),
+            x: 154,
+            y: 145,
+            color: 8_453_920,
+            outline: true,
+        }));
+    }
+
+    #[test]
+    fn creative_keeps_hotbar_but_hides_survival_stats() {
+        let mut gui = GuiIngame::new();
+        let frame = frame(&mut gui, GameType::Creative);
+        assert!(!frame.hotbar.is_empty());
+        assert!(frame.playerStats.is_empty());
+        assert!(frame.experienceBar.is_empty());
+        assert!(frame.experienceLevel.is_none());
+    }
+}

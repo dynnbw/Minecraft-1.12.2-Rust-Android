@@ -1,0 +1,5 @@
+#[path = "IScoreCriteria.rs"] pub mod IScoreCriteria;
+#[path = "Score.rs"] pub mod Score;
+#[path = "ScoreObjective.rs"] pub mod ScoreObjective;
+#[path = "ScorePlayerTeam.rs"] pub mod ScorePlayerTeam;
+#[path = "Scoreboard.rs"] pub mod Scoreboard;

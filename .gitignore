@@ -1,0 +1,40 @@
+# Rust build output
+/target/
+
+# Runtime-generated game data and imported copyrighted assets
+/runtime/
+
+# Local game configuration/state
+/options.txt
+/optionsshaders.txt
+/servers.dat
+/usercache.json
+*.log
+*.dmp
+main-menu-preview.png
+
+# User-installed packs (keep the folders, not their contents)
+/resourcepacks/*
+!/resourcepacks/.gitkeep
+/shaderpacks/*
+!/shaderpacks/.gitkeep
+
+# Local reference trees and extracted archives
+/MCP-1.12.2-main/
+/MCP_1.12.2-main/
+/RustCraft-Public-main/
+/reference/
+
+# Editors and OS files
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+
+# Local environment files
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
