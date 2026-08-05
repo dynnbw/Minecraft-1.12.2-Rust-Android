@@ -541,33 +541,6 @@ cargo run --release
 
 RustCraft-Public 仅作为经过真实运行验证的渲染工程参考，用于比较区块调度、显存驻留、上传和提交策略。本仓库不包含 RustCraft 的源码文件、着色器、资源或品牌。Minecraft 1.12.2 MCP 始终是可见行为的权威基准。
 
-## 上传到 GitHub
-
-清理后的目录可以直接初始化为仓库：
-
-```bat
-git init
-git add .
-git commit -m "Initial public renderer-core release"
-git branch -M main
-git remote add origin <repository-url>
-git push -u origin main
-```
-
-首次本机构建会生成 `Cargo.lock`。本项目是可执行客户端，维护者应在确认依赖解析和 Release 编译正常后，将生成的 `Cargo.lock` 一并提交，以获得可重复的依赖版本。
-
-请确认以下内容没有被误提交：
-
-```text
-runtime/
-target/
-options.txt
-optionsshaders.txt
-个人访问令牌
-客户端日志
-未经授权的游戏资产、光影包和材质包
-```
-
 ## 法律声明
 
 - 本项目与 Mojang Studios、Microsoft、MCP、OptiFine 均无官方隶属或认可关系。
