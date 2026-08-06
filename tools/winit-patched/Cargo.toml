@@ -201,6 +201,8 @@ version = "0.2.0"
 [dependencies.tracing]
 version = "0.1.40"
 default-features = false
+# patched: bridge winit diagnostics to the log facade (android_logger).
+features = ["log"]
 
 [dev-dependencies.image]
 version = "0.25.0"

@@ -143,6 +143,9 @@ pub struct EventLoop<T: 'static> {
     cause: StartCause,
     ignore_volume_keys: bool,
     combining_accent: Option<char>,
+    // Last reported absolute mouse position; used to synthesize relative
+    // motion deltas for DeviceEvent::MouseMotion (mouse look support).
+    last_mouse: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,6 +195,7 @@ impl<T: 'static> EventLoop<T> {
             cause: StartCause::Init,
             ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
+            last_mouse: None,
         })
     }
 
@@ -381,7 +385,14 @@ impl<T: 'static> EventLoop<T> {
                 // events unimplemented. Map SOURCE_MOUSE motion events to the
                 // desktop mouse model: hover -> CursorMoved, buttons ->
                 // MouseInput, wheel -> MouseWheel.
-                let is_mouse = motion_event.source() == Source::Mouse;
+                let source = motion_event.source();
+                debug!(
+                    "android motion: action={:?} source={:?} buttons={:?}",
+                    motion_event.action(),
+                    source,
+                    motion_event.button_state(),
+                );
+                let is_mouse = matches!(source, Source::Mouse | Source::MouseRelative);
                 if is_mouse {
                     let pointer = motion_event.pointer_at_index(motion_event.pointer_index());
                     let position = PhysicalPosition {
@@ -404,6 +415,20 @@ impl<T: 'static> EventLoop<T> {
                                 event: event::WindowEvent::CursorMoved { device_id, position },
                             };
                             callback(event, self.window_target());
+                            // Synthesize relative motion so the application's
+                            // mouse-look path (DeviceEvent::MouseMotion) works
+                            // on Android, which has no native relative mouse.
+                            if let Some((last_x, last_y)) = self.last_mouse {
+                                let delta = (position.x - last_x, position.y - last_y);
+                                if delta.0 != 0.0 || delta.1 != 0.0 {
+                                    let device_event = event::Event::DeviceEvent {
+                                        device_id,
+                                        event: event::DeviceEvent::MouseMotion { delta },
+                                    };
+                                    callback(device_event, self.window_target());
+                                }
+                            }
+                            self.last_mouse = Some((position.x, position.y));
                         }
                         MotionAction::Down => {
                             let event = event::Event::WindowEvent {
