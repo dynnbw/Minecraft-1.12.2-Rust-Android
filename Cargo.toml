@@ -1,6 +1,6 @@
 [package]
 name = "minecraft-1-12-2-rust-vulkan"
-version = "0.110.0"
+version = "0.112.1"
 edition = "2021"
 rust-version = "1.77"
 license-file = "LICENSE"
@@ -28,7 +28,7 @@ num-bigint = "0.4"
 rand = "0.8"
 rayon = "1.10"
 rsa = "0.9"
-ureq = { version = "2.12", features = ["json"] }
+ureq = { version = "2.12", features = ["json", "cookies"] }
 url = "2.5"
 anyhow = "1.0"
 ash-window = "0.13"

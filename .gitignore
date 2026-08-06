@@ -44,5 +44,6 @@ __pycache__/
 # Nested tool crates
 /tools/*/target/
 
-# Android packaging output
-/dist/
+# Account Manager credentials and local user state
+/config/
+/screenshots/

@@ -52,3 +52,8 @@ pub mod GuiOverlayDebug;
 #[path = "ScreenChatOptions.rs"] pub mod ScreenChatOptions;
 #[path = "GuiCustomizeSkin.rs"] pub mod GuiCustomizeSkin;
 #[path = "GuiScreenResourcePacks.rs"] pub mod GuiScreenResourcePacks;
+
+#[path = "GuiAccountManager.rs"] pub mod GuiAccountManager;
+#[path = "GuiMicrosoftAuth.rs"] pub mod GuiMicrosoftAuth;
+#[path = "GuiSessionLogin.rs"] pub mod GuiSessionLogin;
+#[path = "GuiAltCracked.rs"] pub mod GuiAltCracked;

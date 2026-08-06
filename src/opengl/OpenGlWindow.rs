@@ -2198,17 +2198,44 @@ impl OpenGlWorldPipeline {
         }
 
         if !frame.entityDrawRanges.is_empty() {
-            setDrawState(Alpha, true, true, gl::LEQUAL, false, true, None);
             let mut constants = frame.pushConstants;
-            constants.fogParameters[3] = 0.1;
             // The stream selector preserves the original
             // beginEntities/beginBlockEntities program boundary while allowing
-            // unchanged TESR and hanging geometry to stay resident.
+            // unchanged TESR and hanging geometry to stay resident. Nameplate
+            // variants retain `gbuffers_entities` and reproduce both the
+            // depth-mask transitions and texture2D enable/disable boundary.
             for range in &frame.entityDrawRanges {
-                let program = match range.pipeline {
-                    WorldEntityPipelineKind::Entities => GbufferProgram::Entities,
-                    WorldEntityPipelineKind::BlockEntities => GbufferProgram::Block,
-                };
+                let (program, depthTest, depthWrite, depthFunction, textureSentinel) =
+                    match range.pipeline {
+                        WorldEntityPipelineKind::Entities => {
+                            (GbufferProgram::Entities, true, true, gl::LEQUAL, 0.1)
+                        }
+                        WorldEntityPipelineKind::BlockEntities => {
+                            (GbufferProgram::Block, true, true, gl::LEQUAL, 0.1)
+                        }
+                        WorldEntityPipelineKind::NameplateBackgroundSeeThrough => {
+                            (GbufferProgram::Entities, false, false, gl::ALWAYS, -2.0)
+                        }
+                        WorldEntityPipelineKind::NameplateTextSeeThrough => {
+                            (GbufferProgram::Entities, false, false, gl::ALWAYS, 0.1)
+                        }
+                        WorldEntityPipelineKind::NameplateBackgroundDepthNoWrite => {
+                            (GbufferProgram::Entities, true, false, gl::LEQUAL, -2.0)
+                        }
+                        WorldEntityPipelineKind::NameplateTextDepthWrite => {
+                            (GbufferProgram::Entities, true, true, gl::LEQUAL, 0.1)
+                        }
+                    };
+                constants.fogParameters[3] = textureSentinel;
+                setDrawState(
+                    Alpha,
+                    depthTest,
+                    depthWrite,
+                    depthFunction,
+                    false,
+                    true,
+                    None,
+                );
                 self.bindPassProgram(
                     &mut shaderRuntime,
                     frame,

@@ -67,9 +67,9 @@ impl ModelBoxRotation {
 }
 
 thread_local! {
-    /// RustCraft retains immutable cuboid geometry separately from its current
-    /// EntityPose.  This MCP-facing cache applies the same proven split to the
-    /// exact 1.12.2 ModelBox face/UV construction.  Each render worker keeps a
+    /// Retain immutable cuboid geometry separately from the current pose while
+    /// preserving the exact MCP 1.12.2 ModelBox face and UV construction.
+    /// Each render worker keeps a
     /// lock-free local cache; pose, parent pivots, child transforms and world
     /// placement remain per-frame responsibilities of RenderPlayer and
     /// RenderLivingBase.

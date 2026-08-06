@@ -56,8 +56,21 @@ impl ScorePlayerTeam {
     pub fn getColorPrefix(&self) -> &str { &self.colorPrefix }
     pub fn getColorSuffix(&self) -> &str { &self.colorSuffix }
     pub const fn getFriendlyFlags(&self) -> i32 { self.friendlyFlags }
+    /// MCP `Team#getSeeFriendlyInvisiblesEnabled`: bit 1 of the friendly
+    /// flags sent by `SPacketTeams`.
+    pub const fn getSeeFriendlyInvisiblesEnabled(&self) -> bool {
+        self.friendlyFlags & 2 != 0
+    }
+    /// Raw MCP `Team.EnumVisible.internalName` retained from the packet.
+    pub fn getNameTagVisibility(&self) -> &str {
+        &self.nameTagVisibility
+    }
     pub const fn getChatFormatColorIndex(&self) -> i32 { self.chatColor }
     pub fn getMembershipCollection(&self) -> &HashSet<String> { &self.membership }
+
+    pub fn isSameTeam(&self, other: &ScorePlayerTeam) -> bool {
+        self.registeredName == other.registeredName
+    }
 
     pub fn formatPlayerName(team: Option<&ScorePlayerTeam>, playerName: &str) -> String {
         team.map_or_else(

@@ -41,6 +41,7 @@ pub struct GuiTextField {
     disabledColor: i32,
     visible: bool,
     validator: fn(&str) -> bool,
+    maskCharacter: Option<char>,
 }
 
 impl GuiTextField {
@@ -49,7 +50,7 @@ impl GuiTextField {
             id, xPosition: x, yPosition: y, width, height, text: Vec::new(), maxStringLength: 32,
             cursorCounter: 0, enableBackgroundDrawing: true, canLoseFocus: true, isFocused: false,
             isEnabled: true, lineScrollOffset: 0, cursorPosition: 0, selectionEnd: 0,
-            enabledColor: 14_737_632, disabledColor: 7_368_816, visible: true, validator: |_| true,
+            enabledColor: 14_737_632, disabledColor: 7_368_816, visible: true, validator: |_| true, maskCharacter: None,
         }
     }
 
@@ -166,7 +167,8 @@ impl GuiTextField {
         if !(self.isFocused && inside && mouseButton == 0) { return false; }
         let mut relative = mouseX - self.xPosition;
         if self.enableBackgroundDrawing { relative -= 4; }
-        let visible = substringUtf16(&self.text, self.lineScrollOffset, self.text.len());
+        let displayText = self.displayTextUnits();
+        let visible = substringUtf16(&displayText, self.lineScrollOffset, displayText.len());
         let trimmed = font.trim_string_to_width(&visible, self.getWidth(), false);
         let clicked = font.trim_string_to_width(&trimmed, relative.max(0), false).encode_utf16().count();
         self.setCursorPosition(self.lineScrollOffset + clicked, Some(font));
@@ -177,7 +179,8 @@ impl GuiTextField {
         let color = if self.isEnabled { self.enabledColor } else { self.disabledColor };
         let cursor = self.cursorPosition.saturating_sub(self.lineScrollOffset);
         let selection = self.selectionEnd.saturating_sub(self.lineScrollOffset);
-        let visibleSource = substringUtf16(&self.text, self.lineScrollOffset, self.text.len());
+        let displayText = self.displayTextUnits();
+        let visibleSource = substringUtf16(&displayText, self.lineScrollOffset, displayText.len());
         let visible = font.trim_string_to_width(&visibleSource, self.getWidth(), false);
         let visibleUnits: Vec<u16> = visible.encode_utf16().collect();
         let cursorVisibleInText = cursor <= visibleUnits.len();
@@ -221,7 +224,8 @@ impl GuiTextField {
         let color = if self.isEnabled { self.enabledColor } else { self.disabledColor };
         let cursor = self.cursorPosition.saturating_sub(self.lineScrollOffset);
         let selection = self.selectionEnd.saturating_sub(self.lineScrollOffset);
-        let visibleSource = substringUtf16(&self.text, self.lineScrollOffset, self.text.len());
+        let displayText = self.displayTextUnits();
+        let visibleSource = substringUtf16(&displayText, self.lineScrollOffset, displayText.len());
         let visible = font.trim_string_to_width(&visibleSource, self.getWidth(), false);
         let visibleUnits: Vec<u16> = visible.encode_utf16().collect();
         let cursorVisible = cursor <= visibleUnits.len();
@@ -248,6 +252,20 @@ impl GuiTextField {
         }
     }
 
+
+    fn displayTextUnits(&self) -> Vec<u16> {
+        match self.maskCharacter {
+            Some(character) => {
+                let mut encoded = [0u16; 2];
+                let units = character.encode_utf16(&mut encoded);
+                if units.len() == 1 { vec![units[0]; self.text.len()] } else { self.text.clone() }
+            }
+            None => self.text.clone(),
+        }
+    }
+
+    pub fn setMaskCharacter(&mut self, character: Option<char>) { self.maskCharacter = character; }
+
     pub fn setMaxStringLength(&mut self, length: usize) { self.maxStringLength = length; self.text.truncate(length); self.cursorPosition = self.cursorPosition.min(length); self.selectionEnd = self.selectionEnd.min(length); }
     pub const fn getMaxStringLength(&self) -> usize { self.maxStringLength }
     pub const fn getCursorPosition(&self) -> usize { self.cursorPosition }
@@ -264,11 +282,12 @@ impl GuiTextField {
         self.selectionEnd = position.min(self.text.len());
         let Some(font) = font else { return; };
         self.lineScrollOffset = self.lineScrollOffset.min(self.text.len());
-        let visible = substringUtf16(&self.text, self.lineScrollOffset, self.text.len());
+        let displayText = self.displayTextUnits();
+        let visible = substringUtf16(&displayText, self.lineScrollOffset, displayText.len());
         let visibleLength = font.trim_string_to_width(&visible, self.getWidth(), false).encode_utf16().count();
         let visibleEnd = self.lineScrollOffset + visibleLength;
         if self.selectionEnd == self.lineScrollOffset {
-            let reverse = font.trim_string_to_width(&String::from_utf16_lossy(&self.text), self.getWidth(), true).encode_utf16().count();
+            let reverse = font.trim_string_to_width(&String::from_utf16_lossy(&displayText), self.getWidth(), true).encode_utf16().count();
             self.lineScrollOffset = self.lineScrollOffset.saturating_sub(reverse);
         }
         if self.selectionEnd > visibleEnd { self.lineScrollOffset += self.selectionEnd - visibleEnd; }

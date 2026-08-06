@@ -400,6 +400,16 @@ pub struct FirstPersonDrawRange {
 pub enum WorldEntityPipelineKind {
     Entities,
     BlockEntities,
+    /// `EntityRenderer#drawNameplate`: untextured black background with depth
+    /// testing and depth writes disabled for ordinary (non-sneaking) players.
+    NameplateBackgroundSeeThrough,
+    /// First dim font pass with depth testing and depth writes disabled.
+    NameplateTextSeeThrough,
+    /// Sneaking nameplate background: untextured, depth test retained and
+    /// depth writes disabled.
+    NameplateBackgroundDepthNoWrite,
+    /// Final font pass: depth test and depth writes enabled.
+    NameplateTextDepthWrite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1209,6 +1219,7 @@ impl LivingTargetRenderState {
 struct RemotePlayerRenderState {
     entityId: i32,
     uniqueId: uuid::Uuid,
+    name: String,
     skinLocation: ResourceLocation,
     slim: bool,
     capeLocation: Option<ResourceLocation>,
@@ -1252,6 +1263,7 @@ struct RemotePlayerRenderState {
     skinParts: u8,
     packedLight: u32,
     invisible: bool,
+    beingRidden: bool,
     burning: bool,
     swingingArmIsLeft: bool,
     mainHandStack: ItemStack,
@@ -1387,6 +1399,7 @@ pub struct WorldRenderCapture {
     chatHeightUnfocused: f32,
     scoreboard: Scoreboard,
     localPlayerName: String,
+    localPlayerSpectator: bool,
     actionBarMessage: Option<crate::net::minecraft::util::text::ITextComponent::ITextComponent>,
     actionBarAge: i32,
     offhandNonEmpty: bool,
@@ -2661,6 +2674,7 @@ impl VulkanWorldRenderer {
                 chatHeightUnfocused,
                 scoreboard: scoreboard.clone(),
                 localPlayerName: localPlayerName.clone(),
+                localPlayerSpectator: state.gameType == GameType::Spectator,
                 actionBarMessage: actionBarMessage.clone(),
                 actionBarAge: playerTicksExisted - state.actionBarUpdatedTick,
                 offhandNonEmpty,
@@ -2832,6 +2846,7 @@ impl VulkanWorldRenderer {
             RemotePlayerRenderState {
                 entityId: player.entityId,
                 uniqueId: player.uniqueId,
+                name: player.gameProfile.getName().to_owned(),
                 skinLocation: player.getPlayerInfo().or_else(|| state.playerInfoMap.get(&player.uniqueId))
                     .map(NetworkPlayerInfo::getLocationSkin)
                     .unwrap_or_else(|| DefaultPlayerSkin::getDefaultSkin(player.uniqueId)),
@@ -2898,6 +2913,7 @@ impl VulkanWorldRenderer {
                 skinParts: player.skinParts(),
                 packedLight: world.getCombinedLight(lightPos, 0),
                 invisible: player.isInvisible(),
+                beingRidden: !player.entity.passengerIds.is_empty(),
                 burning: player.isBurning(),
                 swingingArmIsLeft: player.swingingArmIsLeft(),
                 mainHandStack: player.getHeldItemMainhand().clone(),
@@ -2926,6 +2942,7 @@ impl VulkanWorldRenderer {
             RemotePlayerRenderState {
                 entityId: player.entityId,
                 uniqueId: localPlayerUniqueId,
+                name: localPlayerName.clone(),
                 skinLocation: localSkinLocation.clone(),
                 slim: localSlim,
                 capeLocation: localPlayerInfo.and_then(NetworkPlayerInfo::getLocationCape),
@@ -2987,6 +3004,7 @@ impl VulkanWorldRenderer {
                 skinParts: localSkinParts,
                 packedLight: world.getCombinedLight(lightPos, 0),
                 invisible: player.isInvisible(),
+                beingRidden: !player.entity.passengerIds.is_empty(),
                 burning: player.isBurning(),
                 swingingArmIsLeft: localSwingingArmIsLeft,
                 mainHandStack: hotbarStacks
@@ -3460,6 +3478,7 @@ impl VulkanWorldRenderer {
             chatHeightUnfocused,
             scoreboard,
             localPlayerName,
+            localPlayerSpectator: state.gameType == GameType::Spectator,
             actionBarMessage,
             actionBarAge: playerTicksExisted - state.actionBarUpdatedTick,
             offhandNonEmpty,
@@ -6058,7 +6077,7 @@ fn build_chunk_mesh(job: ChunkBuildJob) -> ChunkBuildResult {
                                 ((vertex.packedLight >> 4) & 15) as f32,
                                 ((vertex.packedLight >> 20) & 15) as f32,
                             ],
-
+                        
                             shaderEntity: shader_entity_data(state, 1),
                             shaderPadding: 0,
                         }));
@@ -6255,7 +6274,7 @@ fn build_chunk_mesh(job: ChunkBuildJob) -> ChunkBuildResult {
                                 ((packedLight >> 4) & 15) as f32,
                                 ((packedLight >> 20) & 15) as f32,
                             ],
-
+                        
                             shaderEntity: shader_entity_data(state, 3),
                             shaderPadding: 0,
                         });
@@ -7154,7 +7173,7 @@ fn build_digging_particle_mesh(
                 uv,
                 color: particle.color,
                 lightmap,
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -7263,7 +7282,7 @@ fn append_misc_particle_mesh(
                 uv,
                 color: particle.color,
                 lightmap,
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -7380,7 +7399,7 @@ fn build_block_damage_mesh(
                         ((packedLight >> 4) & 15) as f32,
                         ((packedLight >> 20) & 15) as f32,
                     ],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -7431,7 +7450,7 @@ fn build_selection_box_mesh(
             uv: [0.0, 0.0],
             color,
             lightmap: [15.0, 15.0],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         });
@@ -7608,7 +7627,7 @@ fn append_debug_line_strip(
     if points.len() < 2 { return; }
     let sourceVertices = points.iter().map(|position| WorldVertex {
         position: *position, uv: [0.0, 0.0], color, lightmap: [15.0, 15.0],
-
+    
         shaderEntity: [-1, -1, -1],
         shaderPadding: 0,
     }).collect::<Vec<_>>();
@@ -8053,6 +8072,32 @@ fn build_dynamic_meshes(
         WorldEntityMeshKind::Dynamic,
         0,
         entityIndices.len() as u32,
+    );
+    let viewerPosition = capture
+        .localPlayerRenderState
+        .as_ref()
+        .map(|player| player.position)
+        .unwrap_or([
+            capture.playerPosition.posX,
+            capture.playerPosition.posY,
+            capture.playerPosition.posZ,
+        ]);
+    append_remote_player_nameplates(
+        &capture.remotePlayers,
+        &capture.scoreboard,
+        &capture.localPlayerName,
+        capture.localPlayerSpectator,
+        capture.localPlayerRenderState.as_ref().map(|player| player.entityId),
+        viewerPosition,
+        capture.partialTicks,
+        capture.cameraYaw,
+        capture.cameraPitch,
+        frustum,
+        fontRenderer,
+        atlas,
+        &mut entityVertices,
+        &mut entityIndices,
+        &mut entityDrawRanges,
     );
 
     let blockEntityMesh = build_block_entity_meshes(
@@ -8803,7 +8848,7 @@ fn append_first_person_fire_overlay(
                 uv: uv[corner],
                 color: [1.0, 1.0, 1.0, encoded_fire_alpha(0.9, 1)],
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -9058,7 +9103,7 @@ fn append_first_person_item(
                     1.0,
                 ],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -9437,7 +9482,7 @@ fn append_first_person_arm_mesh(
                 uv: map_player_skin_uv(rectangle, source.uv),
                 color: [diffuse, diffuse, diffuse, 1.0],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -9484,7 +9529,7 @@ fn append_first_person_glint_quad(
                 uv,
                 color: [128.0 / 255.0, 64.0 / 255.0, 204.0 / 255.0, 1.0],
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -10986,7 +11031,7 @@ fn append_enchantment_gui_book(
                 uv,
                 color: quad.color,
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -12315,7 +12360,7 @@ fn append_gui_item_quads(
                 uv: map_player_skin_uv(quad.rectangle, quad.uvs[index]),
                 color: quad.color,
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -12470,7 +12515,7 @@ fn append_player_inventory_entity(
                 uv: map_player_skin_uv(quad.rectangle, quad.uvs[index]),
                 color: quad.color,
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -13380,7 +13425,7 @@ fn append_builtin_item_mesh_world(
                     mesh.color[3],
                 ],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -13442,7 +13487,7 @@ fn append_builtin_item_mesh_gui(
                 uv,
                 color: quad.color,
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -13481,7 +13526,7 @@ fn append_shield_model_world(
                 uv,
                 color: [diffuse, diffuse, diffuse, 1.0],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -13536,7 +13581,7 @@ fn append_shield_model_gui(
                 uv,
                 color: quad.color,
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -13690,7 +13735,7 @@ fn append_item_stack_gui(
                 uv,
                 color: quad.color,
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -13767,7 +13812,7 @@ fn append_item_glint_gui(
                     uv,
                     color: quad.color,
                     lightmap: [15.0, 15.0],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -14016,7 +14061,7 @@ fn append_font_draw_list(
                 uv: [u, v],
                 color: packed_argb_to_rgba(vertex.color),
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -14518,7 +14563,7 @@ fn append_world_player_held_item(
                     1.0,
                 ],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -15562,7 +15607,7 @@ fn append_fire_billboards(
                 uv: uvs[corner],
                 color: [1.0, 1.0, 1.0, encoded_fire_alpha(1.0, (layer & 1) as usize)],
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -15729,7 +15774,7 @@ fn append_fish_hook_mesh(
             uv: [0.0, 0.0],
             color: [0.0, 0.0, 0.0, 1.0],
             lightmap: [15.0, 15.0],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         });
@@ -16199,7 +16244,7 @@ fn append_textured_quad(
             uv,
             color,
             lightmap: [15.0, 15.0],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         });
@@ -16256,7 +16301,7 @@ fn append_vehicle_model_pass(
         ],
         color: [1.0; 4],
         lightmap: [blockLight, skyLight],
-
+    
         shaderEntity: [-1, -1, -1],
         shaderPadding: 0,
     }));
@@ -16650,7 +16695,7 @@ fn append_guardian_beam_quad(
                 ((RenderGuardian::PACKED_FULL_BRIGHT >> 4) & 15) as f32,
                 ((RenderGuardian::PACKED_FULL_BRIGHT >> 20) & 15) as f32,
             ],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         });
@@ -17051,7 +17096,7 @@ fn append_shulker_bullet_model_pass(
         ],
         color,
         lightmap: [blockLight, skyLight],
-
+    
         shaderEntity: [-1, -1, -1],
         shaderPadding: 0,
     }));
@@ -17966,7 +18011,7 @@ fn append_living_model_mesh_tinted(
         ],
         color,
         lightmap: [blockLight, skyLight],
-
+    
         shaderEntity: [-1, -1, -1],
         shaderPadding: 0,
     }));
@@ -18101,7 +18146,7 @@ fn append_item_stack_world_transformed_side(
                 ],
                 color: [tint[0] * diffuse, tint[1] * diffuse, tint[2] * diffuse, 1.0],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -18142,7 +18187,7 @@ fn append_living_model_mesh_tinted_uv_offset(
             ],
             color,
             lightmap: [blockLight, skyLight],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         }
@@ -18413,7 +18458,7 @@ fn append_block_state_model_world_outset(
                     }),
                 ],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -18548,7 +18593,7 @@ fn append_textured_quad_world(
             uv: uvs[index],
             color,
             lightmap,
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         });
@@ -18819,7 +18864,7 @@ fn append_ender_crystal_beam(
                     ],
                     color: colors[corner],
                     lightmap: [15.0, 15.0],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -18870,7 +18915,7 @@ fn append_built_in_world_mesh(
                 ],
                 color: [diffuse * mesh.color[0], diffuse * mesh.color[1], diffuse * mesh.color[2], mesh.color[3]],
                 lightmap: [block_light, sky_light],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -18915,7 +18960,7 @@ fn append_built_in_world_damage_mesh(
                 ],
                 color: [diffuse, diffuse, diffuse, 1.0],
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -19128,7 +19173,7 @@ fn append_sky_mesh(
             uv,
             color: colors,
             lightmap: [15.0, 15.0],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         });
@@ -19144,7 +19189,7 @@ fn append_sky_mesh(
                 uv,
                 color: [colors[0], colors[1], colors[2], 0.0],
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             });
@@ -19209,7 +19254,7 @@ fn append_sky_mesh(
                     uv,
                     color: [starBrightness, starBrightness, starBrightness, starBrightness],
                     lightmap: [15.0, 15.0],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -19451,7 +19496,7 @@ fn append_beacon_layer(
                     ],
                     color: [rgb[0], rgb[1], rgb[2], alpha],
                     lightmap: [15.0, 15.0],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -19545,7 +19590,7 @@ fn append_end_portal_tile_entity_meshes(
                         // Lighting is disabled by TileEntityEndPortalRenderer;
                         // the draw pass uses the unlit shader sentinel.
                         lightmap: [15.0, 15.0],
-
+                    
                         shaderEntity: [-1, -1, -1],
                         shaderPadding: 0,
                     });
@@ -19655,7 +19700,7 @@ fn append_sign_tile_entity_meshes(
                     ],
                     color: [diffuse, diffuse, diffuse, 1.0],
                     lightmap: [blockLight, skyLight],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -19714,7 +19759,7 @@ fn append_sign_tile_entity_meshes(
                     uv: [u, v],
                     color: packed_argb_to_rgba(vertex.color),
                     lightmap: [blockLight, skyLight],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -19811,7 +19856,7 @@ fn append_enchantment_table_tile_entity_meshes(
                     ],
                     color: [diffuse, diffuse, diffuse, 1.0],
                     lightmap: [block_light, sky_light],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -19973,7 +20018,7 @@ fn append_skull_tile_entity_meshes(
                     ],
                     color: [diffuse, diffuse, diffuse, 1.0],
                     lightmap: [block_light, sky_light],
-
+                
                     shaderEntity: [-1, -1, -1],
                     shaderPadding: 0,
                 });
@@ -20071,8 +20116,362 @@ fn inventory_player_entity_matrix(
 }
 
 
+fn can_render_player_name_for_teams(
+    playerTeam: Option<&crate::net::minecraft::scoreboard::ScorePlayerTeam::ScorePlayerTeam>,
+    localTeam: Option<&crate::net::minecraft::scoreboard::ScorePlayerTeam::ScorePlayerTeam>,
+    playerInvisible: bool,
+    localPlayerSpectator: bool,
+    playerBeingRidden: bool,
+) -> bool {
+    let sameTeam = playerTeam
+        .zip(localTeam)
+        .is_some_and(|(playerTeam, localTeam)| playerTeam.isSameTeam(localTeam));
 
-#[derive(Default)]
+    // MCP `EntityPlayer#isInvisibleToPlayer`. Spectators see invisible
+    // players; otherwise only same-team players with friendly-invisibility
+    // enabled remain visible.
+    let visibleToLocal = !playerInvisible
+        || localPlayerSpectator
+        || playerTeam.is_some_and(|team| {
+            sameTeam && team.getSeeFriendlyInvisiblesEnabled()
+        });
+
+    if let Some(team) = playerTeam {
+        return match team.getNameTagVisibility() {
+            "always" => visibleToLocal,
+            "never" => false,
+            "hideForOtherTeams" => localTeam.map_or(visibleToLocal, |_| {
+                sameTeam && (team.getSeeFriendlyInvisiblesEnabled() || visibleToLocal)
+            }),
+            "hideForOwnTeam" => {
+                localTeam.map_or(visibleToLocal, |_| !sameTeam && visibleToLocal)
+            }
+            // `RenderLivingBase#canRenderName` returns true from the default
+            // switch branch for unknown enum values.
+            _ => true,
+        };
+    }
+
+    // `Minecraft.isGuiEnabled()` is always true in the currently ported input
+    // surface because the vanilla F1 toggle has not created a hidden-GUI state.
+    // Preserve the remaining no-team conditions exactly.
+    visibleToLocal && !playerBeingRidden
+}
+
+fn is_local_render_view_player(playerEntityId: i32, localPlayerEntityId: Option<i32>) -> bool {
+    localPlayerEntityId == Some(playerEntityId)
+}
+
+fn can_render_remote_player_name(
+    player: &RemotePlayerRenderState,
+    scoreboard: &Scoreboard,
+    localPlayerName: &str,
+    localPlayerSpectator: bool,
+) -> bool {
+    can_render_player_name_for_teams(
+        scoreboard.getPlayersTeam(&player.name),
+        scoreboard.getPlayersTeam(localPlayerName),
+        player.invisible,
+        localPlayerSpectator,
+        player.beingRidden,
+    )
+}
+
+fn remote_player_nameplate_matrix(
+    anchor: [f32; 3],
+    cameraYaw: f32,
+    cameraPitch: f32,
+) -> [[f32; 4]; 4] {
+    // MCP `EntityRenderer#drawNameplate`: translate, rotate to
+    // `RenderManager.playerViewY/playerViewX`, then use the fixed 0.025 scale.
+    // `orient_camera_112` already folds the front-third-person pitch sign into
+    // `cameraPitch`, so the same matrix covers all three camera modes.
+    let mut matrix = translation4(anchor);
+    matrix = multiply4(matrix, rotation_y4(-cameraYaw));
+    matrix = multiply4(matrix, rotation_x4(cameraPitch));
+    multiply4(matrix, scale4_nonuniform([-0.025, -0.025, 0.025]))
+}
+
+fn append_nameplate_background(
+    halfWidth: i32,
+    verticalShift: i32,
+    matrix: [[f32; 4]; 4],
+    atlas: &AtlasState,
+    vertices: &mut Vec<WorldVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let rectangle = atlas.solidWhiteRectangle;
+    let uv = [
+        (rectangle[0] + rectangle[2]) * 0.5,
+        (rectangle[1] + rectangle[3]) * 0.5,
+    ];
+    let positions = [
+        [(-halfWidth - 1) as f32, (-1 + verticalShift) as f32, 0.0],
+        [(-halfWidth - 1) as f32, (8 + verticalShift) as f32, 0.0],
+        [(halfWidth + 1) as f32, (8 + verticalShift) as f32, 0.0],
+        [(halfWidth + 1) as f32, (-1 + verticalShift) as f32, 0.0],
+    ];
+    let base = vertices.len() as u32;
+    for position in positions {
+        vertices.push(WorldVertex {
+            position: transform_point3(matrix, position),
+            uv,
+            color: [0.0, 0.0, 0.0, 0.25],
+            lightmap: [15.0, 15.0],
+            shaderEntity: [-1, -1, -1],
+            shaderPadding: 0,
+        });
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn append_nameplate_text(
+    text: &str,
+    verticalShift: i32,
+    color: i32,
+    matrix: [[f32; 4]; 4],
+    fontRenderer: &mut FontRenderer,
+    atlas: &AtlasState,
+    vertices: &mut Vec<WorldVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let mut drawList = GuiDrawList::new();
+    let x = -fontRenderer.get_string_width(text) / 2;
+    fontRenderer.draw_string(
+        &mut drawList,
+        text,
+        x as f32,
+        verticalShift as f32,
+        color,
+        false,
+    );
+    for command in drawList.commands() {
+        let GuiDrawCommand::Quad { texture, topology, vertices: glyphVertices } = command else {
+            continue;
+        };
+        let rectangle = texture
+            .as_ref()
+            .and_then(|location| atlas.fontTextureRectangles.get(location))
+            .copied()
+            .unwrap_or(atlas.fontRectangle);
+        let base = vertices.len() as u32;
+        for vertex in glyphVertices {
+            let (u, v) = if texture.is_some() {
+                (
+                    rectangle[0] + (rectangle[2] - rectangle[0]) * vertex.u,
+                    rectangle[1] + (rectangle[3] - rectangle[1]) * vertex.v,
+                )
+            } else {
+                (
+                    (rectangle[0] + rectangle[2]) * 0.5,
+                    (rectangle[1] + rectangle[3]) * 0.5,
+                )
+            };
+            vertices.push(WorldVertex {
+                position: transform_point3(matrix, [vertex.x, vertex.y, vertex.z]),
+                uv: [u, v],
+                color: packed_argb_to_rgba(vertex.color),
+                lightmap: [15.0, 15.0],
+                shaderEntity: [-1, -1, -1],
+                shaderPadding: 0,
+            });
+        }
+        match topology {
+            GuiTopology::Quads => indices.extend_from_slice(&[
+                base, base + 1, base + 2, base + 2, base + 3, base,
+            ]),
+            GuiTopology::TriangleStrip => indices.extend_from_slice(&[
+                base, base + 1, base + 2, base + 2, base + 1, base + 3,
+            ]),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_remote_player_nameplate_label(
+    text: &str,
+    anchor: [f32; 3],
+    cameraYaw: f32,
+    cameraPitch: f32,
+    sneaking: bool,
+    fontRenderer: &mut FontRenderer,
+    atlas: &AtlasState,
+    vertices: &mut Vec<WorldVertex>,
+    indices: &mut Vec<u32>,
+    ranges: &mut Vec<WorldEntityDrawRange>,
+) {
+    let verticalShift = if text == "deadmau5" { -10 } else { 0 };
+    let halfWidth = fontRenderer.get_string_width(text) / 2;
+    let matrix = remote_player_nameplate_matrix(anchor, cameraYaw, cameraPitch);
+
+    let backgroundPass = indices.len() as u32;
+    append_nameplate_background(
+        halfWidth,
+        verticalShift,
+        matrix,
+        atlas,
+        vertices,
+        indices,
+    );
+    push_world_entity_draw_range(
+        ranges,
+        if sneaking {
+            WorldEntityPipelineKind::NameplateBackgroundDepthNoWrite
+        } else {
+            WorldEntityPipelineKind::NameplateBackgroundSeeThrough
+        },
+        WorldEntityMeshKind::Dynamic,
+        backgroundPass,
+        indices.len() as u32 - backgroundPass,
+    );
+
+    if !sneaking {
+        // First vanilla text draw while depth is disabled. Keep it in a
+        // separate range because the background is rendered with texture2D
+        // disabled while the font pass samples the font atlas.
+        let seeThroughTextPass = indices.len() as u32;
+        append_nameplate_text(
+            text,
+            verticalShift,
+            0x20FF_FFFF_u32 as i32,
+            matrix,
+            fontRenderer,
+            atlas,
+            vertices,
+            indices,
+        );
+        push_world_entity_draw_range(
+            ranges,
+            WorldEntityPipelineKind::NameplateTextSeeThrough,
+            WorldEntityMeshKind::Dynamic,
+            seeThroughTextPass,
+            indices.len() as u32 - seeThroughTextPass,
+        );
+    }
+
+    let finalTextPass = indices.len() as u32;
+    append_nameplate_text(
+        text,
+        verticalShift,
+        if sneaking { 0x20FF_FFFF_u32 as i32 } else { -1 },
+        matrix,
+        fontRenderer,
+        atlas,
+        vertices,
+        indices,
+    );
+    push_world_entity_draw_range(
+        ranges,
+        WorldEntityPipelineKind::NameplateTextDepthWrite,
+        WorldEntityMeshKind::Dynamic,
+        finalTextPass,
+        indices.len() as u32 - finalTextPass,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_remote_player_nameplates(
+    players: &[RemotePlayerRenderState],
+    scoreboard: &Scoreboard,
+    localPlayerName: &str,
+    localPlayerSpectator: bool,
+    localPlayerEntityId: Option<i32>,
+    viewerPosition: [f64; 3],
+    partialTicks: f32,
+    cameraYaw: f32,
+    cameraPitch: f32,
+    frustum: &Frustum,
+    fontRenderer: &mut FontRenderer,
+    atlas: &AtlasState,
+    vertices: &mut Vec<WorldVertex>,
+    indices: &mut Vec<u32>,
+    ranges: &mut Vec<WorldEntityDrawRange>,
+) {
+    let partial = partialTicks.clamp(0.0, 1.0);
+    for player in players {
+        // MCP `RenderLivingBase#canRenderName` excludes the current
+        // `RenderManager.renderViewEntity`. The local model is appended to the
+        // player mesh list in third person, so it must be filtered explicitly.
+        if is_local_render_view_player(player.entityId, localPlayerEntityId) {
+            continue;
+        }
+        if !can_render_remote_player_name(
+            player,
+            scoreboard,
+            localPlayerName,
+            localPlayerSpectator,
+        ) {
+            continue;
+        }
+        let deltaX = player.position[0] - viewerPosition[0];
+        let deltaY = player.position[1] - viewerPosition[1];
+        let deltaZ = player.position[2] - viewerPosition[2];
+        let distanceSq = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+        let maximumDistance = if player.sneaking { 32.0_f64 } else { 64.0_f64 };
+        if distanceSq >= maximumDistance * maximumDistance {
+            continue;
+        }
+
+        let position = [
+            lerp_f64(player.prevPosition[0], player.position[0], partial) as f32,
+            lerp_f64(player.prevPosition[1], player.position[1], partial) as f32,
+            lerp_f64(player.prevPosition[2], player.position[2], partial) as f32,
+        ];
+        if !frustum.isBoxInFrustum(
+            position[0] as f64 - 0.3,
+            position[1] as f64,
+            position[2] as f64 - 0.3,
+            position[0] as f64 + 0.3,
+            position[1] as f64 + player.height as f64,
+            position[2] as f64 + 0.3,
+        ) {
+            continue;
+        }
+
+        let yOffset = player.height + 0.5 - if player.sneaking { 0.25 } else { 0.0 };
+        let mut anchor = [position[0], position[1] + yOffset, position[2]];
+        if distanceSq < 100.0 {
+            if let Some(objective) = scoreboard.getObjectiveInDisplaySlot(2) {
+                let scoreText = format!(
+                    "{} {}",
+                    scoreboard.getScorePoints(&player.name, objective.getName()),
+                    objective.getDisplayName(),
+                );
+                append_remote_player_nameplate_label(
+                    &scoreText,
+                    anchor,
+                    cameraYaw,
+                    cameraPitch,
+                    player.sneaking,
+                    fontRenderer,
+                    atlas,
+                    vertices,
+                    indices,
+                    ranges,
+                );
+                anchor[1] += fontRenderer.font_height as f32 * 1.15 * 0.025;
+            }
+        }
+
+        let displayName = crate::net::minecraft::scoreboard::ScorePlayerTeam::ScorePlayerTeam::formatPlayerName(
+            scoreboard.getPlayersTeam(&player.name),
+            &player.name,
+        );
+        append_remote_player_nameplate_label(
+            &displayName,
+            anchor,
+            cameraYaw,
+            cameraPitch,
+            player.sneaking,
+            fontRenderer,
+            atlas,
+            vertices,
+            indices,
+            ranges,
+        );
+    }
+}
+
 struct RemotePlayerMeshBatch {
     vertices: Vec<WorldVertex>,
     indices: Vec<u32>,
@@ -20227,7 +20626,7 @@ fn build_remote_player_meshes_serial(
             uv: map_player_skin_uv(rectangle, vertex.uv),
             color: [1.0, 1.0, 1.0, 1.0],
             lightmap: [modelBlockLight, skyLight],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         }));
@@ -20411,7 +20810,7 @@ fn append_glint_mesh(
             uv: enchanted_glint_uv(rectangle, vertex.uv, pass),
             color: pass.color,
             lightmap: [15.0, 15.0],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         }));
@@ -20520,7 +20919,7 @@ fn append_world_player_armor(
                 uv: map_player_skin_uv(rectangle, vertex.uv),
                 color: tint.color,
                 lightmap: [blockLight, skyLight],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             }));
@@ -20590,7 +20989,7 @@ fn append_world_player_custom_head(
             uv: map_player_skin_uv(rectangle, vertex.uv),
             color: [1.0; 4],
             lightmap: [blockLight, skyLight],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         }
@@ -20629,7 +21028,7 @@ fn append_world_player_elytra(
         uv: map_player_skin_uv(rectangle, vertex.uv),
         color: [1.0; 4],
         lightmap: [blockLight, skyLight],
-
+    
         shaderEntity: [-1, -1, -1],
         shaderPadding: 0,
     }));
@@ -20698,7 +21097,7 @@ fn append_world_player_cape(
         uv: map_player_skin_uv(rectangle, vertex.uv),
         color: [1.0, 1.0, 1.0, 1.0],
         lightmap: [blockLight, skyLight],
-
+    
         shaderEntity: [-1, -1, -1],
         shaderPadding: 0,
     }));
@@ -21151,6 +21550,106 @@ mod tests {
             lineBeingEdited: -1,
             packedLight: 0,
         }
+    }
+
+    fn test_team(
+        name: &str,
+        visibility: &str,
+        friendlyFlags: i32,
+    ) -> crate::net::minecraft::scoreboard::ScorePlayerTeam::ScorePlayerTeam {
+        let mut team =
+            crate::net::minecraft::scoreboard::ScorePlayerTeam::ScorePlayerTeam::new(name);
+        team.update(name, "", "", friendlyFlags, visibility, "always", -1);
+        team
+    }
+
+    #[test]
+    fn player_name_visibility_matches_mcp_team_rules() {
+        let red = test_team("red", "always", 0);
+        let redFriendlyInvisible = test_team("red", "always", 2);
+        let blue = test_team("blue", "always", 0);
+
+        assert!(can_render_player_name_for_teams(
+            None, None, false, false, false,
+        ));
+        assert!(!can_render_player_name_for_teams(
+            None, None, false, false, true,
+        ));
+        assert!(!can_render_player_name_for_teams(
+            None, None, true, false, false,
+        ));
+        assert!(can_render_player_name_for_teams(
+            None, None, true, true, false,
+        ));
+
+        assert!(can_render_player_name_for_teams(
+            Some(&red), Some(&red), false, false, false,
+        ));
+        assert!(!can_render_player_name_for_teams(
+            Some(&red), Some(&red), true, false, false,
+        ));
+        assert!(can_render_player_name_for_teams(
+            Some(&redFriendlyInvisible),
+            Some(&redFriendlyInvisible),
+            true,
+            false,
+            false,
+        ));
+
+        let never = test_team("red", "never", 2);
+        assert!(!can_render_player_name_for_teams(
+            Some(&never), Some(&never), false, false, false,
+        ));
+
+        let hideOther = test_team("red", "hideForOtherTeams", 0);
+        assert!(can_render_player_name_for_teams(
+            Some(&hideOther), Some(&hideOther), false, false, false,
+        ));
+        assert!(!can_render_player_name_for_teams(
+            Some(&hideOther), Some(&blue), false, false, false,
+        ));
+
+        let hideOwn = test_team("red", "hideForOwnTeam", 0);
+        assert!(!can_render_player_name_for_teams(
+            Some(&hideOwn), Some(&hideOwn), false, false, false,
+        ));
+        assert!(can_render_player_name_for_teams(
+            Some(&hideOwn), Some(&blue), false, false, false,
+        ));
+    }
+
+    #[test]
+    fn local_render_view_player_is_excluded_from_nameplates() {
+        assert!(is_local_render_view_player(17, Some(17)));
+        assert!(!is_local_render_view_player(18, Some(17)));
+        assert!(!is_local_render_view_player(17, None));
+    }
+
+    #[test]
+    fn nameplate_background_and_font_passes_keep_distinct_state_ranges() {
+        let mut ranges = Vec::new();
+        push_world_entity_draw_range(
+            &mut ranges,
+            WorldEntityPipelineKind::NameplateBackgroundSeeThrough,
+            WorldEntityMeshKind::Dynamic,
+            0,
+            6,
+        );
+        push_world_entity_draw_range(
+            &mut ranges,
+            WorldEntityPipelineKind::NameplateTextSeeThrough,
+            WorldEntityMeshKind::Dynamic,
+            6,
+            6,
+        );
+        push_world_entity_draw_range(
+            &mut ranges,
+            WorldEntityPipelineKind::NameplateTextDepthWrite,
+            WorldEntityMeshKind::Dynamic,
+            12,
+            6,
+        );
+        assert_eq!(ranges.len(), 3);
     }
 
     #[test]
@@ -21981,7 +22480,7 @@ mod tests {
                 uv: [0.0, 0.0],
                 color: [1.0; 4],
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             },
@@ -21990,7 +22489,7 @@ mod tests {
                 uv: [1.0, 1.0],
                 color: [1.0; 4],
                 lightmap: [15.0, 15.0],
-
+            
                 shaderEntity: [-1, -1, -1],
                 shaderPadding: 0,
             },
@@ -22017,7 +22516,7 @@ mod tests {
             uv: [0.0, 0.0],
             color: [1.0; 4],
             lightmap: [15.0, 15.0],
-
+        
             shaderEntity: [-1, -1, -1],
             shaderPadding: 0,
         }];

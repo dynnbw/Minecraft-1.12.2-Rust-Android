@@ -2,7 +2,7 @@
 
 > 使用 Rust 对 Minecraft Java Edition 1.12.2 客户端进行语义级移植,当前重心为 **Android 平台(协议 340,Vulkan 渲染,物理键鼠操作)**。
 
-当前 Android 基线:**0.110.0**<br>
+当前 Android 基线:**0.112.1**(同步上游 v0.112.1)<br>
 验证设备:**Xiaomi 12 Pro**(Adreno 730,Android 12+,Vulkan 1.1)<br>
 桌面基线:**Windows 10/11 x64**(Vulkan / OpenGL 双后端,见[桌面版章节](#桌面版-windows))
 
@@ -28,6 +28,7 @@
 - 远程服务器连接(协议 340,legacy 离线会话)
 - Vulkan 渲染全链路:Adreno 730 设备、共享区块显存池、间接多绘制
 - 游戏内第一人称交互(移动/视角/背包)基于 winit 鼠标补丁,当前基线已验证到键盘事件与点击事件层
+- 触摸操作:点击热键栏切换物品、长按丢弃;世界点击放置、长按摧毁、滑动转视角
 
 ### 已知限制
 
@@ -37,13 +38,14 @@
 - **无音频**:Android 构建为静音(音频后端 no-op),APK 打包时剔除了全部声音资源
 - **无 OptiFine 光影**:光影为 OpenGL 后端专属,Android 仅 Vulkan
 - **无软键盘 IME**:聊天输入需要物理键盘
+- **长按判定**:长按阈值 3 秒,依赖系统定时唤醒;不同设备的触摸采样频率可能影响判定
 - **单机不可用**:单人集成服务器不在项目基线
 
 ### 明确不做(当前范围)
 
 - 触摸 UI(虚拟摇杆等)
 - OpenGL 后端
-- Microsoft 登录 UI(维持外部会话来源模式)
+- Microsoft 登录 UI(桌面版已有内置账号管理器,Android 侧未接入)
 - 音频后端
 
 ## 安卓构建与打包
@@ -160,7 +162,7 @@ python tools\one_click_import_assets.py --project-root . --minecraft-dir "%APPDA
 
 ## 桌面版(Windows)
 
-桌面基线保持双后端渲染:Vulkan 1.1 与 OpenGL 3.3 Compatibility Profile(OptiFine 光影仅 OpenGL)。构建:
+桌面基线保持双后端渲染:Vulkan 1.1 与 OpenGL 3.3 Compatibility Profile(OptiFine 光影仅 OpenGL)。v0.112.1 起包含内置账号管理器:主菜单 `Accounts` 页面支持 Microsoft 浏览器 OAuth 登录、Token/Offline 会话切换、已保存账号管理、皮肤上传,账号数据保存在 `config/account.json`(明文令牌,勿提交)。另含远程玩家名称标签(队伍前缀/颜色、可见规则、潜行名牌)。构建:
 
 ```bat
 cargo build --release --bin mc112-client

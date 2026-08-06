@@ -11,7 +11,7 @@ use crate::net::minecraft::util::BlockRenderLayer::BlockRenderLayer;
 use crate::net::minecraft::client::renderer::chunk::RenderChunk::RenderChunkKey;
 use crate::vulkan::VulkanWorldRenderer::{
     ChunkLayerRange, EntityOverlayPipelineKind, FirstPersonPipelineKind, HudPipelineKind,
-    WorldEntityMeshKind, WorldRenderFrame, WorldVertex,
+    WorldEntityMeshKind, WorldEntityPipelineKind, WorldRenderFrame, WorldVertex,
 };
 
 // The terrain submission path keeps immutable RenderChunk geometry in bounded
@@ -218,6 +218,9 @@ pub struct WorldGpuPipeline {
     renderPass: vk::RenderPass,
     opaquePipeline: vk::Pipeline,
     entityPipeline: vk::Pipeline,
+    nameplateSeeThroughPipeline: vk::Pipeline,
+    nameplateDepthNoWritePipeline: vk::Pipeline,
+    nameplateDepthWritePipeline: vk::Pipeline,
     /// `RenderTntMinecart` texture-disabled white fuse flash.
     entityOverlayPipeline: vk::Pipeline,
     endPortalAdditivePipeline: vk::Pipeline,
@@ -409,6 +412,9 @@ impl WorldGpuPipeline {
             renderPass: vk::RenderPass::null(),
             opaquePipeline: vk::Pipeline::null(),
             entityPipeline: vk::Pipeline::null(),
+            nameplateSeeThroughPipeline: vk::Pipeline::null(),
+            nameplateDepthNoWritePipeline: vk::Pipeline::null(),
+            nameplateDepthWritePipeline: vk::Pipeline::null(),
             entityOverlayPipeline: vk::Pipeline::null(),
             endPortalAdditivePipeline: vk::Pipeline::null(),
             beaconCorePipeline: vk::Pipeline::null(),
@@ -1760,24 +1766,48 @@ impl WorldGpuPipeline {
             // TESR/hanging meshes now own independent resident buffers, while
             // this command list interleaves them with the dynamic stream.
             if !frame.entityDrawRanges.is_empty() {
-                device.cmd_bind_pipeline(
-                    commandBuffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.entityPipeline,
-                );
                 let mut constants = frame.pushConstants;
-                constants.fogParameters[3] = 0.1;
-                device.cmd_push_constants(
-                    commandBuffer,
-                    self.pipelineLayout,
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    struct_as_bytes(&constants),
-                );
+                let mut boundTextureSentinel = f32::NAN;
                 let mut boundMesh = None;
+                let mut boundPipeline = vk::Pipeline::null();
                 // The range plan is emitted in RenderManager.renderEntityStatic /
-        // TileEntityRendererDispatcher source order by VulkanWorldRenderer.
-        for range in &frame.entityDrawRanges {
+                // TileEntityRendererDispatcher source order by VulkanWorldRenderer.
+                for range in &frame.entityDrawRanges {
+                    let (pipeline, textureSentinel) = match range.pipeline {
+                        WorldEntityPipelineKind::Entities
+                        | WorldEntityPipelineKind::BlockEntities => (self.entityPipeline, 0.1),
+                        WorldEntityPipelineKind::NameplateBackgroundSeeThrough => {
+                            (self.nameplateSeeThroughPipeline, -2.0)
+                        }
+                        WorldEntityPipelineKind::NameplateTextSeeThrough => {
+                            (self.nameplateSeeThroughPipeline, 0.1)
+                        }
+                        WorldEntityPipelineKind::NameplateBackgroundDepthNoWrite => {
+                            (self.nameplateDepthNoWritePipeline, -2.0)
+                        }
+                        WorldEntityPipelineKind::NameplateTextDepthWrite => {
+                            (self.nameplateDepthWritePipeline, 0.1)
+                        }
+                    };
+                    if boundTextureSentinel != textureSentinel {
+                        constants.fogParameters[3] = textureSentinel;
+                        device.cmd_push_constants(
+                            commandBuffer,
+                            self.pipelineLayout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            struct_as_bytes(&constants),
+                        );
+                        boundTextureSentinel = textureSentinel;
+                    }
+                    if boundPipeline != pipeline {
+                        device.cmd_bind_pipeline(
+                            commandBuffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline,
+                        );
+                        boundPipeline = pipeline;
+                    }
                     let mesh = match range.mesh {
                         WorldEntityMeshKind::Dynamic => self.entityMeshes[frameSlot].as_ref(),
                         WorldEntityMeshKind::BlockEntities => {
@@ -2374,6 +2404,18 @@ impl WorldGpuPipeline {
                 device.destroy_pipeline(self.entityPipeline, None);
                 self.entityPipeline = vk::Pipeline::null();
             }
+            if self.nameplateSeeThroughPipeline != vk::Pipeline::null() {
+                device.destroy_pipeline(self.nameplateSeeThroughPipeline, None);
+                self.nameplateSeeThroughPipeline = vk::Pipeline::null();
+            }
+            if self.nameplateDepthNoWritePipeline != vk::Pipeline::null() {
+                device.destroy_pipeline(self.nameplateDepthNoWritePipeline, None);
+                self.nameplateDepthNoWritePipeline = vk::Pipeline::null();
+            }
+            if self.nameplateDepthWritePipeline != vk::Pipeline::null() {
+                device.destroy_pipeline(self.nameplateDepthWritePipeline, None);
+                self.nameplateDepthWritePipeline = vk::Pipeline::null();
+            }
             if self.entityOverlayPipeline != vk::Pipeline::null() {
                 device.destroy_pipeline(self.entityOverlayPipeline, None);
                 self.entityOverlayPipeline = vk::Pipeline::null();
@@ -2657,7 +2699,7 @@ impl WorldGpuPipeline {
             createdPipelines.push(pipeline);
             Ok::<vk::Pipeline, anyhow::Error>(pipeline)
         };
-        let pipelines = (|| -> anyhow::Result<[vk::Pipeline; 17]> {
+        let pipelines = (|| -> anyhow::Result<[vk::Pipeline; 20]> {
             let lessEqual = vk::CompareOp::LESS_OR_EQUAL;
             let triangles = vk::PrimitiveTopology::TRIANGLE_LIST;
             let opaque = create(
@@ -2674,6 +2716,43 @@ impl WorldGpuPipeline {
             // `RenderPlayer.doRender` applies the PLAYER_SKIN blend profile
             // while retaining depth writes.
             let entity = create(
+                PipelineBlendMode::Alpha,
+                true,
+                true,
+                lessEqual,
+                vk::CullModeFlags::NONE,
+                triangles,
+                1.0,
+                None,
+                true,
+            )?;
+            // EntityRenderer#drawNameplate first pass for non-sneaking
+            // players: depth test and writes disabled, alpha blending enabled.
+            let nameplateSeeThrough = create(
+                PipelineBlendMode::Alpha,
+                false,
+                false,
+                vk::CompareOp::ALWAYS,
+                vk::CullModeFlags::NONE,
+                triangles,
+                1.0,
+                None,
+                true,
+            )?;
+            // Sneaking background: depth test retained, writes disabled.
+            let nameplateDepthNoWrite = create(
+                PipelineBlendMode::Alpha,
+                true,
+                false,
+                lessEqual,
+                vk::CullModeFlags::NONE,
+                triangles,
+                1.0,
+                None,
+                true,
+            )?;
+            // Final text pass: depth test and writes enabled.
+            let nameplateDepthWrite = create(
                 PipelineBlendMode::Alpha,
                 true,
                 true,
@@ -2877,6 +2956,9 @@ impl WorldGpuPipeline {
             Ok([
                 opaque,
                 entity,
+                nameplateSeeThrough,
+                nameplateDepthNoWrite,
+                nameplateDepthWrite,
                 entityOverlay,
                 endPortalAdditive,
                 beaconCore,
@@ -2898,6 +2980,9 @@ impl WorldGpuPipeline {
         let [
             opaquePipeline,
             entityPipeline,
+            nameplateSeeThroughPipeline,
+            nameplateDepthNoWritePipeline,
+            nameplateDepthWritePipeline,
             entityOverlayPipeline,
             endPortalAdditivePipeline,
             beaconCorePipeline,
@@ -2926,6 +3011,9 @@ impl WorldGpuPipeline {
         };
         self.opaquePipeline = opaquePipeline;
         self.entityPipeline = entityPipeline;
+        self.nameplateSeeThroughPipeline = nameplateSeeThroughPipeline;
+        self.nameplateDepthNoWritePipeline = nameplateDepthNoWritePipeline;
+        self.nameplateDepthWritePipeline = nameplateDepthWritePipeline;
         self.entityOverlayPipeline = entityOverlayPipeline;
         self.endPortalAdditivePipeline = endPortalAdditivePipeline;
         self.beaconCorePipeline = beaconCorePipeline;
