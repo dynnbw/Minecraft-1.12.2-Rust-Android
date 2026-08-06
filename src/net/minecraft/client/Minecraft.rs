@@ -5,7 +5,7 @@ use anyhow::Context;
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition},
-    event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{CursorGrabMode, Fullscreen, Window, WindowId},
@@ -5265,6 +5265,8 @@ struct MinecraftApplication {
     nextFrameDeadline: Instant,
     nextTickDeadline: Instant,
     pendingResizeSince: Option<Instant>,
+    #[cfg(target_os = "android")]
+    lastTouchPosition: Option<PhysicalPosition<f64>>,
     keyboardModifiers: ModifiersState,
     worldMouseGrabbed: bool,
     windowFocused: bool,
@@ -5283,11 +5285,204 @@ struct MinecraftApplication {
 }
 
 impl MinecraftApplication {
+    // Mouse/cursor handling shared by desktop MouseInput/CursorMoved and the
+    // Android touch bridge (Android converts physical-mouse clicks into
+    // Touchscreen motion events; touches also map to right-click semantics).
+    fn handleCursorMove(
+        &mut self,
+        position: PhysicalPosition<f64>,
+        eventLoop: &ActiveEventLoop,
+        fatalError: &mut Option<anyhow::Error>,
+    ) {
+                log::debug!("input: CursorMoved {position:?}");
+                let dragAction = if let (Some(renderer), Some(runtime)) = (self.renderer.as_ref(), self.mainMenu.as_mut()) {
+                    runtime.mousePosition = position;
+                    runtime.mouseInsideWindow = true;
+                    let extent = renderer.extent();
+                    runtime.mouseDragged(extent.width, extent.height)
+                } else {
+                    None
+                };
+                if let Some(action) = dragAction {
+                    if let Err(error) = self.applyGuiAction(action) {
+                        *fatalError = Some(error.context("failed applying dragged video option"));
+                    }
+                }
+                if self.mainMenu.as_ref().is_some_and(|runtime| !runtime.isAnimated()) { self.requestRedraw(); }
+    }
+
+    fn handleMousePress(
+        &mut self,
+        eventLoop: &ActiveEventLoop,
+        button: MouseButton,
+        fatalError: &mut Option<anyhow::Error>,
+    ) -> bool {
+                log::debug!("input: MouseInput pressed {button:?}");
+                let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);
+                let inventoryOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen);
+                let chatOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isChatOpen);
+                let worldGuiOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorldGuiOpen);
+                if inWorld {
+                    if worldGuiOpen && matches!(button, MouseButton::Left | MouseButton::Right) {
+                        let action = if let (Some(renderer), Some(runtime), Some(minecraft)) = (
+                            self.renderer.as_ref(),
+                            self.mainMenu.as_mut(),
+                            self.minecraft.as_ref(),
+                        ) {
+                            let extent = renderer.extent();
+                            runtime.mouseClicked(
+                                extent.width,
+                                extent.height,
+                                if button == MouseButton::Right { 1 } else { 0 },
+                                self.keyboardModifiers.shift_key(),
+                                &minecraft.gameSettings,
+                            )
+                        } else { None };
+                        if let Some(action) = action {
+                            match self.applyGuiAction(action) {
+                                Ok(true) => { eventLoop.exit(); return true; }
+                                Ok(false) => self.requestRedraw(),
+                                Err(error) => *fatalError = Some(error.context("failed applying world GUI action")),
+                            }
+                        }
+                    } else if worldGuiOpen {
+                        // GuiScreen owns every mouse button while displayed.
+                    } else if chatOpen {
+                        // GuiChat owns mouse focus while open. Clickable chat
+                        // components are added with the full ITextComponent
+                        // style/event port; until then never leak a click into
+                        // attack/use or recapture the gameplay cursor.
+                        self.requestRedraw();
+                    } else if inventoryOpen && matches!(button, MouseButton::Left | MouseButton::Right | MouseButton::Middle) {
+                        let interaction = if let (Some(renderer), Some(runtime)) =
+                            (self.renderer.as_ref(), self.mainMenu.as_mut())
+                        {
+                            let extent = renderer.extent();
+                            Some(runtime.inventoryMouseClicked(extent.width, extent.height, button, self.keyboardModifiers))
+                        } else { None };
+                        match interaction {
+                            Some(Ok(true)) => self.requestRedraw(),
+                            Some(Ok(false)) | None => {}
+                            Some(Err(message)) => log::error!("failed sending inventory click: {message}"),
+                        }
+                    } else if !self.worldMouseGrabbed && button == MouseButton::Left {
+                        self.setWorldMouseGrabbed(true);
+                        self.requestRedraw();
+                    } else if self.worldMouseGrabbed
+                        && matches!(button, MouseButton::Left | MouseButton::Right)
+                    {
+                        let interaction = self
+                            .mainMenu
+                            .as_mut()
+                            .map(|runtime| runtime.worldMouseButton(button, true));
+                        match interaction {
+                            Some(Ok(true)) => self.requestRedraw(),
+                            Some(Ok(false)) | None => {}
+                            Some(Err(message)) => {
+                                log::error!("failed sending player interaction: {message}")
+                            }
+                        }
+                    }
+                } else if matches!(button, MouseButton::Left | MouseButton::Right) {
+                    let action = if let (Some(renderer), Some(runtime), Some(minecraft)) = (
+                        self.renderer.as_ref(),
+                        self.mainMenu.as_mut(),
+                        self.minecraft.as_ref(),
+                    ) {
+                        let extent = renderer.extent();
+                        runtime.mouseClicked(
+                            extent.width,
+                            extent.height,
+                            if button == MouseButton::Right { 1 } else { 0 },
+                            self.keyboardModifiers.shift_key(),
+                            &minecraft.gameSettings,
+                        )
+                    } else { None };
+                    if let Some(action) = action {
+                        match self.applyGuiAction(action) {
+                            Ok(true) => { eventLoop.exit(); return true; }
+                            Ok(false) => self.requestRedraw(),
+                            Err(error) => *fatalError = Some(error.context("failed applying GUI action")),
+                        }
+                    }
+                }
+        false
+    }
+
+    fn handleMouseRelease(&mut self, button: MouseButton) {
+                log::debug!("input: MouseInput released {button:?}");
+                let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);
+                let inventoryOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen);
+                let chatOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isChatOpen);
+                let worldGuiOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorldGuiOpen);
+                if inWorld && worldGuiOpen {
+                    if button == MouseButton::Left {
+                        if let (Some(renderer), Some(runtime)) = (self.renderer.as_ref(), self.mainMenu.as_mut()) {
+                            let extent = renderer.extent();
+                            runtime.mouseReleased(extent.width, extent.height);
+                        }
+                    }
+                } else if inWorld && chatOpen {
+                    // Consumed by GuiChat; see the matching press branch.
+                } else if inWorld && inventoryOpen && matches!(button, MouseButton::Left | MouseButton::Right | MouseButton::Middle) {
+                    let interaction = if let (Some(renderer), Some(runtime)) =
+                        (self.renderer.as_ref(), self.mainMenu.as_mut())
+                    {
+                        let extent = renderer.extent();
+                        Some(runtime.inventoryMouseReleased(
+                            extent.width,
+                            extent.height,
+                            button,
+                            self.keyboardModifiers,
+                        ))
+                    } else {
+                        None
+                    };
+                    match interaction {
+                        Some(Ok(true)) => self.requestRedraw(),
+                        Some(Ok(false)) | None => {}
+                        Some(Err(message)) => log::error!("failed releasing inventory click: {message}"),
+                    }
+                } else if inWorld && self.worldMouseGrabbed && matches!(button, MouseButton::Left | MouseButton::Right) {
+                    let interaction = self
+                        .mainMenu
+                        .as_mut()
+                        .map(|runtime| runtime.worldMouseButton(button, false));
+                    if let Some(Err(message)) = interaction {
+                        log::error!("failed releasing in-world mouse action: {message}");
+                    }
+                } else if button == MouseButton::Left {
+                    if let (Some(renderer), Some(runtime)) = (self.renderer.as_ref(), self.mainMenu.as_mut()) {
+                        let extent = renderer.extent();
+                        runtime.mouseReleased(extent.width, extent.height);
+                    }
+                }
+    }
+
+    /// First-person look shared by desktop DeviceEvent::MouseMotion and the
+    /// Android touch bridge (touch drag = mouse movement).
+    fn applyMouseMotion(&mut self, deltaX: f64, deltaY: f64) {
+        if !self.worldMouseGrabbed
+            || self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isModalWorldGuiOpen)
+        {
+            return;
+        }
+        let turned = match (self.mainMenu.as_mut(), self.minecraft.as_ref()) {
+            (Some(runtime), Some(minecraft)) => runtime.turnPlayer(deltaX, deltaY, &minecraft.gameSettings),
+            _ => false,
+        };
+        if turned {
+            self.requestRedraw();
+        }
+    }
+
     fn new(minecraft: Minecraft) -> Self {
         Self {
             minecraft: Some(minecraft), renderer: None, window: None, mainMenu: None, fatalError: None,
             redrawPending: false, nextFrameDeadline: Instant::now(), nextTickDeadline: Instant::now(),
             pendingResizeSince: None, keyboardModifiers: ModifiersState::empty(), worldMouseGrabbed: false,
+            #[cfg(target_os = "android")]
+            lastTouchPosition: None,
             windowFocused: true,
             debugFps: 0,
             framesThisSecond: 0,
@@ -6204,21 +6399,7 @@ impl ApplicationHandler for MinecraftApplication {
             }
             WindowEvent::ModifiersChanged(modifiers) => self.keyboardModifiers = modifiers.state(),
             WindowEvent::CursorMoved { position, .. } => {
-                log::debug!("input: CursorMoved {position:?}");
-                let dragAction = if let (Some(renderer), Some(runtime)) = (self.renderer.as_ref(), self.mainMenu.as_mut()) {
-                    runtime.mousePosition = position;
-                    runtime.mouseInsideWindow = true;
-                    let extent = renderer.extent();
-                    runtime.mouseDragged(extent.width, extent.height)
-                } else {
-                    None
-                };
-                if let Some(action) = dragAction {
-                    if let Err(error) = self.applyGuiAction(action) {
-                        fatalError = Some(error.context("failed applying dragged video option"));
-                    }
-                }
-                if self.mainMenu.as_ref().is_some_and(|runtime| !runtime.isAnimated()) { self.requestRedraw(); }
+                self.handleCursorMove(position, eventLoop, &mut fatalError);
             }
             WindowEvent::CursorEntered { .. } => {
                 if let Some(runtime) = self.mainMenu.as_mut() { runtime.mouseInsideWindow = true; }
@@ -6253,147 +6434,56 @@ impl ApplicationHandler for MinecraftApplication {
                 if changed { self.requestRedraw(); }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
-                log::debug!("input: MouseInput pressed {button:?}");
-                let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);
-                let inventoryOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen);
-                let chatOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isChatOpen);
-                let worldGuiOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorldGuiOpen);
-                if inWorld {
-                    if worldGuiOpen && matches!(button, MouseButton::Left | MouseButton::Right) {
-                        let action = if let (Some(renderer), Some(runtime), Some(minecraft)) = (
-                            self.renderer.as_ref(),
-                            self.mainMenu.as_mut(),
-                            self.minecraft.as_ref(),
-                        ) {
-                            let extent = renderer.extent();
-                            runtime.mouseClicked(
-                                extent.width,
-                                extent.height,
-                                if button == MouseButton::Right { 1 } else { 0 },
-                                self.keyboardModifiers.shift_key(),
-                                &minecraft.gameSettings,
-                            )
-                        } else { None };
-                        if let Some(action) = action {
-                            match self.applyGuiAction(action) {
-                                Ok(true) => { eventLoop.exit(); return; }
-                                Ok(false) => self.requestRedraw(),
-                                Err(error) => fatalError = Some(error.context("failed applying world GUI action")),
-                            }
-                        }
-                    } else if worldGuiOpen {
-                        // GuiScreen owns every mouse button while displayed.
-                    } else if chatOpen {
-                        // GuiChat owns mouse focus while open. Clickable chat
-                        // components are added with the full ITextComponent
-                        // style/event port; until then never leak a click into
-                        // attack/use or recapture the gameplay cursor.
-                        self.requestRedraw();
-                    } else if inventoryOpen && matches!(button, MouseButton::Left | MouseButton::Right | MouseButton::Middle) {
-                        let interaction = if let (Some(renderer), Some(runtime)) =
-                            (self.renderer.as_ref(), self.mainMenu.as_mut())
-                        {
-                            let extent = renderer.extent();
-                            Some(runtime.inventoryMouseClicked(extent.width, extent.height, button, self.keyboardModifiers))
-                        } else { None };
-                        match interaction {
-                            Some(Ok(true)) => self.requestRedraw(),
-                            Some(Ok(false)) | None => {}
-                            Some(Err(message)) => log::error!("failed sending inventory click: {message}"),
-                        }
-                    } else if !self.worldMouseGrabbed && button == MouseButton::Left {
-                        self.setWorldMouseGrabbed(true);
-                        self.requestRedraw();
-                    } else if self.worldMouseGrabbed
-                        && matches!(button, MouseButton::Left | MouseButton::Right)
-                    {
-                        let interaction = self
-                            .mainMenu
-                            .as_mut()
-                            .map(|runtime| runtime.worldMouseButton(button, true));
-                        match interaction {
-                            Some(Ok(true)) => self.requestRedraw(),
-                            Some(Ok(false)) | None => {}
-                            Some(Err(message)) => {
-                                log::error!("failed sending player interaction: {message}")
-                            }
-                        }
-                    }
-                } else if matches!(button, MouseButton::Left | MouseButton::Right) {
-                    let action = if let (Some(renderer), Some(runtime), Some(minecraft)) = (
-                        self.renderer.as_ref(),
-                        self.mainMenu.as_mut(),
-                        self.minecraft.as_ref(),
-                    ) {
-                        let extent = renderer.extent();
-                        runtime.mouseClicked(
-                            extent.width,
-                            extent.height,
-                            if button == MouseButton::Right { 1 } else { 0 },
-                            self.keyboardModifiers.shift_key(),
-                            &minecraft.gameSettings,
-                        )
-                    } else { None };
-                    if let Some(action) = action {
-                        match self.applyGuiAction(action) {
-                            Ok(true) => { eventLoop.exit(); return; }
-                            Ok(false) => self.requestRedraw(),
-                            Err(error) => fatalError = Some(error.context("failed applying GUI action")),
-                        }
-                    }
-                }
+                if self.handleMousePress(eventLoop, button, &mut fatalError) { return; }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => {
-                log::debug!("input: MouseInput released {button:?}");
-                let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);
-                let inventoryOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen);
-                let chatOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isChatOpen);
-                let worldGuiOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorldGuiOpen);
-                if inWorld && worldGuiOpen {
-                    if button == MouseButton::Left {
-                        if let (Some(renderer), Some(runtime)) = (self.renderer.as_ref(), self.mainMenu.as_mut()) {
-                            let extent = renderer.extent();
-                            runtime.mouseReleased(extent.width, extent.height);
-                        }
-                    }
-                } else if inWorld && chatOpen {
-                    // Consumed by GuiChat; see the matching press branch.
-                } else if inWorld && inventoryOpen && matches!(button, MouseButton::Left | MouseButton::Right | MouseButton::Middle) {
-                    let interaction = if let (Some(renderer), Some(runtime)) =
-                        (self.renderer.as_ref(), self.mainMenu.as_mut())
-                    {
-                        let extent = renderer.extent();
-                        Some(runtime.inventoryMouseReleased(
-                            extent.width,
-                            extent.height,
-                            button,
-                            self.keyboardModifiers,
-                        ))
-                    } else {
-                        None
-                    };
-                    match interaction {
-                        Some(Ok(true)) => self.requestRedraw(),
-                        Some(Ok(false)) | None => {}
-                        Some(Err(message)) => log::error!("failed releasing inventory click: {message}"),
-                    }
-                } else if inWorld && self.worldMouseGrabbed && matches!(button, MouseButton::Left | MouseButton::Right) {
-                    let interaction = self
-                        .mainMenu
-                        .as_mut()
-                        .map(|runtime| runtime.worldMouseButton(button, false));
-                    if let Some(Err(message)) = interaction {
-                        log::error!("failed releasing in-world mouse action: {message}");
-                    }
-                } else if button == MouseButton::Left {
-                    if let (Some(renderer), Some(runtime)) = (self.renderer.as_ref(), self.mainMenu.as_mut()) {
-                        let extent = renderer.extent();
-                        runtime.mouseReleased(extent.width, extent.height);
-                    }
-                }
+                self.handleMouseRelease(button);
             }
             WindowEvent::Touch(touch) => {
                 log::debug!("input: Touch {:?} at {:?}", touch.phase, touch.location);
+                #[cfg(target_os = "android")]
+                {
+                    // Android converts physical-mouse clicks into touchscreen
+                    // motion events; a single finger maps to the right mouse
+                    // button (use/place in world, right-click in GUIs), and
+                    // dragging moves the cursor and turns the first-person
+                    // camera like mouse movement.
+                    let position = touch.location;
+                    match touch.phase {
+                        TouchPhase::Started => {
+                            // GUIs only accept left clicks; in the world a
+                            // touch means right-click (use/place). The first
+                            // touch in a world grabs the gameplay cursor.
+                            let runtime = self.mainMenu.as_ref();
+                            let inWorld = runtime.is_some_and(MainMenuRuntime::isWorld);
+                            let guiOpen = runtime.is_some_and(|r| {
+                                r.isWorldGuiOpen() || r.isInventoryOpen() || r.isChatOpen()
+                            });
+                            let button = if inWorld {
+                                if guiOpen || !self.worldMouseGrabbed {
+                                    MouseButton::Left
+                                } else {
+                                    MouseButton::Right
+                                }
+                            } else {
+                                MouseButton::Left
+                            };
+                            if self.handleMousePress(eventLoop, button, &mut fatalError) { return; }
+                            self.lastTouchPosition = Some(position);
+                        }
+                        TouchPhase::Moved => {
+                            self.handleCursorMove(position, eventLoop, &mut fatalError);
+                            if let Some(prev) = self.lastTouchPosition {
+                                self.applyMouseMotion(position.x - prev.x, position.y - prev.y);
+                            }
+                            self.lastTouchPosition = Some(position);
+                        }
+                        TouchPhase::Ended | TouchPhase::Cancelled => {
+                            self.handleMouseRelease(MouseButton::Right);
+                            self.lastTouchPosition = None;
+                        }
+                    }
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 log::debug!("input: KeyboardInput {:?}", event.physical_key);
