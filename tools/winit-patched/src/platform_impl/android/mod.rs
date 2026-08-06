@@ -394,7 +394,14 @@ impl<T: 'static> EventLoop<T> {
                 );
                 let is_mouse = matches!(source, Source::Mouse | Source::MouseRelative);
                 if is_mouse {
-                    let pointer = motion_event.pointer_at_index(motion_event.pointer_index());
+                    let pointer_index = motion_event.pointer_index();
+                    if pointer_index >= motion_event.pointer_count() {
+                        // Can happen when an input device is unplugged mid-
+                        // event; reading past the pointer array is UB in NDK.
+                        debug!("android motion: pointer index {pointer_index} out of range; skipping");
+                        return InputStatus::Handled;
+                    }
+                    let pointer = motion_event.pointer_at_index(pointer_index);
                     let position = PhysicalPosition {
                         x: pointer.x() as f64,
                         y: pointer.y() as f64,
@@ -1050,7 +1057,11 @@ impl Window {
     }
 
     pub fn set_cursor_grab(&self, _: CursorGrabMode) -> Result<(), error::ExternalError> {
-        Err(error::ExternalError::NotSupported(error::NotSupportedError::new()))
+        // Android has no native cursor lock. The game treats grab as the
+        // first-person-mode switch and reads relative mouse motion from the
+        // synthesized DeviceEvent::MouseMotion (see the motion handler);
+        // accept the request so the gameplay input path activates.
+        Ok(())
     }
 
     pub fn set_cursor_visible(&self, _: bool) {}
