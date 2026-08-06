@@ -25,6 +25,32 @@ mod platform {
             .unwrap_or_else(|| Path::new(".").to_path_buf())
     }
 
+    /// Physical screen size in pixels (DisplayMetrics). Touch coordinates on
+    /// Android are screen pixels, while the swapchain renders at the
+    /// ANativeWindow size (which excludes the system bar); hit-testing needs
+    /// the ratio between the two.
+    pub fn screen_size() -> (u32, u32) {
+        use jni::objects::JObject;
+
+        let app = android_app();
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) }) else {
+            return (0, 0);
+        };
+        let Ok(mut env) = vm.attach_current_thread() else { return (0, 0); };
+        let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as jni::sys::jobject) };
+        let Ok(resources) = env.call_method(&activity, "getResources", "()Landroid/content/res/Resources;", &[]) else {
+            return (0, 0);
+        };
+        let Ok(resources) = resources.l() else { return (0, 0); };
+        let Ok(metrics) = env.call_method(&resources, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", &[]) else {
+            return (0, 0);
+        };
+        let Ok(metrics) = metrics.l() else { return (0, 0); };
+        let width = env.get_field(&metrics, "widthPixels", "I").and_then(|v| v.i()).unwrap_or(0);
+        let height = env.get_field(&metrics, "heightPixels", "I").and_then(|v| v.i()).unwrap_or(0);
+        (width as u32, height as u32)
+    }
+
     /// Hides the status and navigation bars so the game surface covers the
     /// whole display. Without this the system bar shrinks the window while
     /// the Vulkan surface stays full-size, which makes every present report

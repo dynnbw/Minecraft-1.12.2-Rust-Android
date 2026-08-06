@@ -5484,19 +5484,34 @@ impl MinecraftApplication {
 
     /// Maps a physical position to the hotbar slot touched (0-8), or None
     /// when the position is outside the bottom hotbar strip.
+    ///
+    /// The HUD is laid out in the scaled-resolution coordinate system
+    /// (ScaledResolution) and scaled up to the screen, while touch
+    /// coordinates are screen pixels; map the touch back into scaled space
+    /// before hit-testing.
     #[cfg(target_os = "android")]
     fn hotbarSlotAt(&self, position: PhysicalPosition<f64>) -> Option<i32> {
-        let extent = self.renderer.as_ref()?.extent();
-        let guiWidth = extent.width as f64;
-        let guiHeight = extent.height as f64;
-        let center = guiWidth / 2.0;
-        if position.y < guiHeight - 22.0 || position.y > guiHeight {
+        let (screenWidth, screenHeight) = crate::launcher::android::screen_size();
+        let (screenWidth, screenHeight) = (screenWidth as f64, screenHeight as f64);
+        if screenWidth == 0.0 || screenHeight == 0.0 {
             return None;
         }
-        if position.x < center - 91.0 || position.x > center + 91.0 {
+        let Some(scaledWidth) = self.mainMenu.as_ref().map(|r| r.scaledResolution.scaled_width() as f64) else {
+            return None;
+        };
+        let Some(scaledHeight) = self.mainMenu.as_ref().map(|r| r.scaledResolution.scaled_height() as f64) else {
+            return None;
+        };
+        let x = position.x * (scaledWidth / screenWidth);
+        let y = position.y * (scaledHeight / screenHeight);
+        let center = scaledWidth / 2.0;
+        if y < scaledHeight - 22.0 || y > scaledHeight {
             return None;
         }
-        Some(((position.x - (center - 91.0)) / 20.0).floor() as i32)
+        if x < center - 91.0 || x > center + 91.0 {
+            return None;
+        }
+        Some(((x - (center - 91.0)) / 20.0).floor() as i32)
     }
 
     /// First-person look shared by desktop DeviceEvent::MouseMotion and the
@@ -6510,6 +6525,10 @@ impl ApplicationHandler for MinecraftApplication {
                                 // World surface: defer the action until the
                                 // tap/long-press decision is known.
                                 let hotbarSlot = self.hotbarSlotAt(position);
+                                log::debug!(
+                                    "touch world Started: pos={position:?} extent={:?} hotbarSlot={hotbarSlot:?}",
+                                    self.renderer.as_ref().map(|r| r.extent()),
+                                );
                                 self.touchPress = Some(TouchPress {
                                     started: Instant::now(),
                                     startedPosition: position,
@@ -6541,6 +6560,7 @@ impl ApplicationHandler for MinecraftApplication {
                         }
                         TouchPhase::Ended | TouchPhase::Cancelled => {
                             if let Some(press) = self.touchPress.take() {
+                                eventLoop.set_control_flow(ControlFlow::Wait);
                                 if !press.movedAway {
                                     if self.touchLongPressFired {
                                         if !press.isHotbar {
@@ -6558,7 +6578,9 @@ impl ApplicationHandler for MinecraftApplication {
                                             7 => KeyCode::Digit8,
                                             _ => KeyCode::Digit9,
                                         };
-                                        match self.mainMenu.as_mut().map(|runtime| runtime.worldHotbarKey(key, self.keyboardModifiers)) {
+                                        let hotbarResult = self.mainMenu.as_mut().map(|runtime| runtime.worldHotbarKey(key, self.keyboardModifiers));
+                                        log::debug!("touch hotbar tap: slot={} key={key:?} result={hotbarResult:?}", press.hotbarSlot);
+                                        match hotbarResult {
                                             Some(Err(message)) => log::error!("failed switching hotbar slot: {message}"),
                                             _ => {}
                                         }
