@@ -32,6 +32,10 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
             .with_tag("mc112"),
     );
     let game_dir = launcher::android::game_dir();
+    if let Err(error) = launcher::AssetBootstrap::extract_assets(&app.asset_manager(), &game_dir) {
+        log::error!("asset extraction failed: {error:#}");
+        return;
+    }
     let assets = game_dir.join("assets");
     log::info!("Minecraft 1.12.2 Android entry: gameDir={}", game_dir.display());
     let args: Vec<String> = vec![
