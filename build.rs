@@ -1,6 +1,39 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        copy_prebuilt_spirv();
+        return;
+    }
+    compile_spirv_with_shaderc();
+}
+
+/// Android builds embed precompiled SPIR-V (see tools/spv-precompiler) so that
+/// Google shaderc never needs to be cross-compiled. Windows keeps the live
+/// shaderc path so shader edits are picked up on rebuild.
+fn copy_prebuilt_spirv() {
+    let shader_dir = Path::new("src/vulkan/shaders");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
+    let spv_dir = shader_dir.join("spv");
+    let shaders = [
+        "world.vert.spv",
+        "world.frag.spv",
+        "gui.vert.spv",
+        "gui.frag.spv",
+        "panorama.vert.spv",
+        "panorama.frag.spv",
+        "panorama_blur.frag.spv",
+    ];
+    for file in shaders {
+        let source = spv_dir.join(file);
+        let target = out_dir.join(file);
+        std::fs::copy(&source, &target)
+            .unwrap_or_else(|e| panic!("failed copying {} to {}: {e}", source.display(), target.display()));
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
+}
+
+fn compile_spirv_with_shaderc() {
     let shader_dir = Path::new("src/vulkan/shaders");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     let compiler = shaderc::Compiler::new().expect("failed to create shaderc compiler");
