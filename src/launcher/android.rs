@@ -25,6 +25,46 @@ mod platform {
             .unwrap_or_else(|| Path::new(".").to_path_buf())
     }
 
+    /// Opens a URL in the system browser via an ACTION_VIEW intent. Android
+    /// has no xdg-open; the upstream OAuth flow otherwise fails to launch.
+    pub fn open_url(url: &str) -> bool {
+        use jni::objects::{JObject, JValue};
+
+        let app = android_app();
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) }) else {
+            return false;
+        };
+        let Ok(mut env) = vm.attach_current_thread() else { return false; };
+        let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as jni::sys::jobject) };
+        let Some(url_string) = env.new_string(url).ok() else { return false; };
+        let url_obj = JObject::from(url_string);
+        let Ok(uri) = env.call_static_method(
+            "android/net/Uri",
+            "parse",
+            "(Ljava/lang/String;)Landroid/net/Uri;",
+            &[JValue::Object(&url_obj)],
+        ) else {
+            return false;
+        };
+        let Ok(uri) = uri.l() else { return false; };
+        let Ok(action) = env.new_string("android.intent.action.VIEW") else { return false; };
+        let action_obj = JObject::from(action);
+        let Ok(intent) = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;Landroid/net/Uri;)V",
+            &[JValue::Object(&action_obj), JValue::Object(&uri)],
+        ) else {
+            return false;
+        };
+        match env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)]) {
+            Ok(_) => true,
+            Err(error) => {
+                log::error!("failed starting browser intent: {error}");
+                false
+            }
+        }
+    }
+
     /// Physical screen size in pixels (DisplayMetrics). Touch coordinates on
     /// Android are screen pixels, while the swapchain renders at the
     /// ANativeWindow size (which excludes the system bar); hit-testing needs

@@ -765,20 +765,32 @@ fn write_callback_page(stream: &mut TcpStream, success: bool) {
 }
 
 fn open_browser(url: &str) -> Result<(), MicrosoftAuthError> {
-    #[cfg(target_os = "windows")]
-    // Do not route an OAuth URL through `cmd /C start`: `cmd.exe` treats every
-    // unescaped `&` in the query string as a command separator, truncating the
-    // authorization request.  rundll32 receives the URL as one process
-    // argument and delegates it to the user's registered HTTPS handler.
-    let status = Command::new("rundll32.exe")
-        .arg("url.dll,FileProtocolHandler")
-        .arg(url)
-        .status();
-    #[cfg(target_os = "macos")]
-    let status = Command::new("open").arg(url).status();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let status = Command::new("xdg-open").arg(url).status();
-    status.ok().filter(|status| status.success()).map(|_| ()).ok_or(MicrosoftAuthError::Browser)
+    #[cfg(target_os = "android")]
+    {
+        // Android has no xdg-open; launch the browser via an ACTION_VIEW intent.
+        if crate::launcher::android::open_url(url) {
+            Ok(())
+        } else {
+            Err(MicrosoftAuthError::Browser)
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        #[cfg(target_os = "windows")]
+        // Do not route an OAuth URL through `cmd /C start`: `cmd.exe` treats every
+        // unescaped `&` in the query string as a command separator, truncating the
+        // authorization request.  rundll32 receives the URL as one process
+        // argument and delegates it to the user's registered HTTPS handler.
+        let status = Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(url)
+            .status();
+        #[cfg(target_os = "macos")]
+        let status = Command::new("open").arg(url).status();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let status = Command::new("xdg-open").arg(url).status();
+        status.ok().filter(|status| status.success()).map(|_| ()).ok_or(MicrosoftAuthError::Browser)
+    }
 }
 
 #[cfg(test)]
