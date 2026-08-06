@@ -61,6 +61,7 @@ glutin-winit = "0.5.0"
 [target.'cfg(target_os = "android")'.dependencies]
 ash = { version = "0.38", default-features = false, features = ["loaded", "debug"] }
 ndk = "0.9"
+ndk-sys = "0.6"
 android_logger = "0.14"
 
 [target.'cfg(windows)'.dependencies]
@@ -77,3 +78,9 @@ panic = "abort"
 
 [build-dependencies]
 shaderc = "=0.8.3"
+
+# winit 0.30 leaves Android mouse events unimplemented ("TODO mouse events").
+# Patch the vendored copy to map SOURCE_MOUSE motion events to MouseInput,
+# CursorMoved and MouseWheel so physical mice work on Android.
+[patch.crates-io]
+winit = { path = "tools/winit-patched" }

@@ -251,6 +251,7 @@ impl VulkanWindow {
         let (imageIndex, acquireSuboptimal) = match acquired {
             Ok(value) => value,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                log::debug!("swapchain OUT_OF_DATE on acquire; recreating");
                 self.recreateSwapchain(window)?;
                 return Ok(());
             }
@@ -306,7 +307,14 @@ impl VulkanWindow {
 
         self.currentFrame = (self.currentFrame + 1) % self.synchronization.len();
         if acquireSuboptimal || presentSuboptimal {
-            self.recreateSwapchain(window)?;
+            // SUBOPTIMAL is harmless in the Vulkan contract (frames still
+            // present correctly). On Android, Adreno drivers can report it
+            // every frame for non-IDENTITY surface transforms; recreating the
+            // swapchain in response would stall the frame loop. Only
+            // OUT_OF_DATE (real size changes) and Resized events rebuild.
+            log::debug!(
+                "swapchain suboptimal after frame (acquire={acquireSuboptimal}, present={presentSuboptimal}); tolerating"
+            );
         }
         Ok(())
     }
@@ -353,6 +361,7 @@ impl VulkanWindow {
         let (imageIndex, acquireSuboptimal) = match acquired {
             Ok(value) => value,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                log::debug!("swapchain OUT_OF_DATE on acquire; recreating");
                 self.recreateSwapchain(window)?;
                 return Ok(());
             }
@@ -421,7 +430,14 @@ impl VulkanWindow {
 
         self.currentFrame = (self.currentFrame + 1) % self.synchronization.len();
         if acquireSuboptimal || presentSuboptimal {
-            self.recreateSwapchain(window)?;
+            // SUBOPTIMAL is harmless in the Vulkan contract (frames still
+            // present correctly). On Android, Adreno drivers can report it
+            // every frame for non-IDENTITY surface transforms; recreating the
+            // swapchain in response would stall the frame loop. Only
+            // OUT_OF_DATE (real size changes) and Resized events rebuild.
+            log::debug!(
+                "swapchain suboptimal after frame (acquire={acquireSuboptimal}, present={presentSuboptimal}); tolerating"
+            );
         }
         Ok(())
     }
@@ -468,6 +484,7 @@ impl VulkanWindow {
         let (imageIndex, acquireSuboptimal) = match acquired {
             Ok(value) => value,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                log::debug!("swapchain OUT_OF_DATE on acquire; recreating");
                 self.recreateSwapchain(window)?;
                 return Ok(());
             }
@@ -558,7 +575,14 @@ impl VulkanWindow {
 
         self.currentFrame = (self.currentFrame + 1) % self.synchronization.len();
         if acquireSuboptimal || presentSuboptimal {
-            self.recreateSwapchain(window)?;
+            // SUBOPTIMAL is harmless in the Vulkan contract (frames still
+            // present correctly). On Android, Adreno drivers can report it
+            // every frame for non-IDENTITY surface transforms; recreating the
+            // swapchain in response would stall the frame loop. Only
+            // OUT_OF_DATE (real size changes) and Resized events rebuild.
+            log::debug!(
+                "swapchain suboptimal after frame (acquire={acquireSuboptimal}, present={presentSuboptimal}); tolerating"
+            );
         }
         Ok(())
     }
@@ -581,8 +605,8 @@ impl VulkanWindow {
     pub const fn isVsyncEnabled(&self) -> bool { self.enableVsync }
 
     fn createSwapchainObjects(&mut self, window: &Window) -> anyhow::Result<()> {
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
+        let (width, height) = self.nativeSurfaceSize(window);
+        if width == 0 || height == 0 {
             return Ok(());
         }
 
@@ -593,6 +617,15 @@ impl VulkanWindow {
             )
         }
         .context("failed querying Vulkan surface capabilities")?;
+        log::debug!(
+            "surface capabilities: current_extent={:?}, min={:?}, max={:?}, current_transform={:?}, supported_transforms={:?}, composite_alpha={:?}",
+            capabilities.current_extent,
+            capabilities.min_image_extent,
+            capabilities.max_image_extent,
+            capabilities.current_transform,
+            capabilities.supported_transforms,
+            capabilities.supported_composite_alpha,
+        );
         let requiredSwapchainUsage =
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST;
         anyhow::ensure!(
@@ -619,11 +652,27 @@ impl VulkanWindow {
             &capabilities,
             &formats,
             &presentModes,
-            size.width,
-            size.height,
+            width,
+            height,
             self.enableVsync,
         )
         .context("surface did not expose a usable swapchain format")?;
+        // Android: current_transform can report ROTATE_90 while the content
+        // is landscape (winit creates the surface before the activity
+        // rotation settles). Using ROTATE_90 would flip the image sideways;
+        // keep the renderer's orientation by preferring IDENTITY and tolerating
+        // the resulting SUBOPTIMAL present (frames still display correctly).
+        #[cfg(target_os = "android")]
+        let pre_transform = if capabilities
+            .supported_transforms
+            .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
+        {
+            vk::SurfaceTransformFlagsKHR::IDENTITY
+        } else {
+            capabilities.current_transform
+        };
+        #[cfg(not(target_os = "android"))]
+        let pre_transform = choice.pre_transform;
         log::info!(
             "Vulkan swapchain: {}x{}, format={:?}, present={:?}, vsync={}",
             choice.extent.width,
@@ -653,7 +702,7 @@ impl VulkanWindow {
             .image_extent(choice.extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
-            .pre_transform(choice.pre_transform)
+            .pre_transform(pre_transform)
             .composite_alpha(choice.composite_alpha)
             .present_mode(choice.present_mode)
             .clipped(true)
@@ -899,9 +948,34 @@ impl VulkanWindow {
         Ok(())
     }
 
-    fn recreateSwapchain(&mut self, window: &Window) -> anyhow::Result<()> {
+    /// Android: winit's reported inner size can differ from the actual
+    /// ANativeWindow dimensions (system bars, cutouts), which makes every
+    /// present return VK_SUBOPTIMAL_KHR. Read the native window instead.
+    fn nativeSurfaceSize(&self, window: &Window) -> (u32, u32) {
+        #[cfg(target_os = "android")]
+        {
+            use raw_window_handle::HasWindowHandle;
+            if let Ok(handle) = window.window_handle() {
+                if let raw_window_handle::RawWindowHandle::AndroidNdk(android) = handle.as_raw() {
+                    let native = android.a_native_window.as_ptr() as *mut ndk_sys::ANativeWindow;
+                    let w = unsafe { ndk_sys::ANativeWindow_getWidth(native) };
+                    let h = unsafe { ndk_sys::ANativeWindow_getHeight(native) };
+                    if w > 0 && h > 0 {
+                        log::debug!("native surface size: {w}x{h}");
+                        return (w as u32, h as u32);
+                    }
+                    log::debug!("native window reported invalid size {w}x{h}; falling back to winit");
+                }
+            }
+        }
         let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
+        log::debug!("using winit inner size: {}x{}", size.width, size.height);
+        (size.width, size.height)
+    }
+
+    fn recreateSwapchain(&mut self, window: &Window) -> anyhow::Result<()> {
+        let (width, height) = self.nativeSurfaceSize(window);
+        if width == 0 || height == 0 {
             return Ok(());
         }
         unsafe {

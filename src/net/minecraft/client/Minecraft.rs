@@ -6170,7 +6170,13 @@ impl ApplicationHandler for MinecraftApplication {
         let mut fatalError = None;
         match event {
             WindowEvent::CloseRequested => eventLoop.exit(),
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::Resized(size) => {
+                log::debug!("window resized event: {size:?}");
+                self.pendingResizeSince = Some(Instant::now());
+                eventLoop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + RESIZE_DEBOUNCE));
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                log::debug!("window scale factor changed");
                 self.pendingResizeSince = Some(Instant::now());
                 eventLoop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + RESIZE_DEBOUNCE));
             }
@@ -6198,6 +6204,7 @@ impl ApplicationHandler for MinecraftApplication {
             }
             WindowEvent::ModifiersChanged(modifiers) => self.keyboardModifiers = modifiers.state(),
             WindowEvent::CursorMoved { position, .. } => {
+                log::debug!("input: CursorMoved {position:?}");
                 let dragAction = if let (Some(renderer), Some(runtime)) = (self.renderer.as_ref(), self.mainMenu.as_mut()) {
                     runtime.mousePosition = position;
                     runtime.mouseInsideWindow = true;
@@ -6222,6 +6229,7 @@ impl ApplicationHandler for MinecraftApplication {
                 if self.mainMenu.as_ref().is_some_and(|runtime| !runtime.isAnimated()) { self.requestRedraw(); }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                log::debug!("input: MouseWheel {delta:?}");
                 let lines = match delta { MouseScrollDelta::LineDelta(_, y) => y, MouseScrollDelta::PixelDelta(value) => (value.y / 20.0) as f32 };
                 let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);
                 let inventoryOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen);
@@ -6245,6 +6253,7 @@ impl ApplicationHandler for MinecraftApplication {
                 if changed { self.requestRedraw(); }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
+                log::debug!("input: MouseInput pressed {button:?}");
                 let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);
                 let inventoryOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen);
                 let chatOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isChatOpen);
@@ -6335,6 +6344,7 @@ impl ApplicationHandler for MinecraftApplication {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => {
+                log::debug!("input: MouseInput released {button:?}");
                 let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);
                 let inventoryOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen);
                 let chatOpen = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isChatOpen);
@@ -6382,7 +6392,11 @@ impl ApplicationHandler for MinecraftApplication {
                     }
                 }
             }
+            WindowEvent::Touch(touch) => {
+                log::debug!("input: Touch {:?} at {:?}", touch.phase, touch.location);
+            }
             WindowEvent::KeyboardInput { event, .. } => {
+                log::debug!("input: KeyboardInput {:?}", event.physical_key);
                 let keyCode = match event.physical_key { PhysicalKey::Code(code) => Some(code), _ => None };
                 let pressed = event.state == ElementState::Pressed;
                 let inWorld = self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld);

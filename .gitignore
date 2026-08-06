@@ -29,6 +29,7 @@ main-menu-preview.png
 /.idea/
 /.vscode/
 /docs
+/third_party
 .DS_Store
 Thumbs.db
 

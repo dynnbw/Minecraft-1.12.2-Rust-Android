@@ -28,9 +28,10 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     launcher::android::set_android_app(app.clone());
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Info)
+            .with_max_level(log::LevelFilter::Debug)
             .with_tag("mc112"),
     );
+    launcher::android::enter_fullscreen();
     let game_dir = launcher::android::game_dir();
     if let Err(error) = launcher::AssetBootstrap::extract_assets(&app.asset_manager(), &game_dir) {
         log::error!("asset extraction failed: {error:#}");

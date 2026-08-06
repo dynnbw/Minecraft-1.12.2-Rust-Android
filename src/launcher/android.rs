@@ -24,6 +24,19 @@ mod platform {
             .internal_data_path()
             .unwrap_or_else(|| Path::new(".").to_path_buf())
     }
+
+    /// Hides the status and navigation bars so the game surface covers the
+    /// whole display. Without this the system bar shrinks the window while
+    /// the Vulkan surface stays full-size, which makes every present report
+    /// VK_SUBOPTIMAL_KHR. Must run before the event loop creates the surface.
+    pub fn enter_fullscreen() {
+        use winit::platform::android::activity::WindowManagerFlags;
+        android_app().set_window_flags(
+            WindowManagerFlags::FULLSCREEN,
+            WindowManagerFlags::FORCE_NOT_FULLSCREEN,
+        );
+        log::info!("requested immersive fullscreen");
+    }
 }
 
 #[cfg(target_os = "android")]

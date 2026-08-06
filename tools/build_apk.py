@@ -39,6 +39,9 @@ def stage_assets(src: pathlib.Path) -> None:
         if not path.is_file():
             continue
         rel = path.relative_to(src).as_posix()
+        # aapt2 drops dotfiles from APK assets; keep the manifest consistent.
+        if any(part.startswith(".") for part in rel.split("/")):
+            continue
         if rel in EXCLUDE_FILES or any(rel.startswith(d + "/") for d in EXCLUDE_DIRS):
             continue
         target = ASSETS_STAGE / rel
