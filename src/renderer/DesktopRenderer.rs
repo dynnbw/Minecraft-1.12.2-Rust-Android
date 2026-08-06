@@ -33,7 +33,7 @@ impl DesktopRenderer {
         eventLoop: &ActiveEventLoop,
         attributes: WindowAttributes,
         gameSettings: &GameSettings,
-        gameDir: &Path,
+        _gameDir: &Path,
     ) -> anyhow::Result<(Window, Self)> {
         match gameSettings.renderBackend {
             RenderBackend::Vulkan => {
@@ -46,10 +46,12 @@ impl DesktopRenderer {
             }
             #[cfg(not(target_os = "android"))]
             RenderBackend::OpenGl => {
-                let (window, renderer) = OpenGlWindow::create(eventLoop, attributes, gameSettings, gameDir)
+                let (window, renderer) = OpenGlWindow::create(eventLoop, attributes, gameSettings, _gameDir)
                     .context("failed initializing Minecraft OpenGL output")?;
                 Ok((window, Self::OpenGl(renderer)))
             }
+            #[cfg(target_os = "android")]
+            RenderBackend::OpenGl => unreachable!("Android builds force the Vulkan backend"),
         }
     }
 

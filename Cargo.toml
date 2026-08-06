@@ -9,6 +9,8 @@ default-run = "mc112-client"
 [lib]
 name = "minecraft_1_12_2_rust_vulkan"
 path = "src/lib.rs"
+# cdylib: Android NativeActivity loads the game as lib<name>.so.
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "mc112-client"

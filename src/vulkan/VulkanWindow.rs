@@ -71,6 +71,13 @@ pub struct VulkanWindow {
 
 impl VulkanWindow {
     pub fn new(window: &Window, gameSettings: &GameSettings) -> anyhow::Result<Self> {
+        #[cfg(target_os = "android")]
+        let entry = unsafe {
+            // Android has no statically linkable Vulkan loader; dlopen
+            // libvulkan.so (always present on Android 12+ devices).
+            ash::Entry::load().context("failed loading libvulkan.so")?
+        };
+        #[cfg(not(target_os = "android"))]
         let entry = Entry::linked();
         let displayHandle = window
             .display_handle()

@@ -5866,11 +5866,13 @@ impl MinecraftApplication {
                     log::error!("Couldn't save selected shader pack {name:?}: {error}");
                 } else {
                     log::info!("Selected OptiFine shader pack resource set: {name}");
+                    #[cfg(not(target_os = "android"))]
                     self.renderer.as_mut().expect("desktop renderer").reloadShaderPack();
                 }
             }
             RuntimeGuiAction::ReloadShaderPack => {
                 log::info!("Reloading OptiFine shader pack after option changes");
+                #[cfg(not(target_os = "android"))]
                 self.renderer.as_mut().expect("desktop renderer").reloadShaderPack();
             }
             RuntimeGuiAction::OpenShaderPackFolder => {
