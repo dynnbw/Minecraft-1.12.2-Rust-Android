@@ -24,7 +24,7 @@ main-menu-preview.png
 /MCP_1.12.2-main/
 /RustCraft-Public-main/
 /reference/
-
+/dist/
 # Editors and OS files
 /.idea/
 /.vscode/
@@ -42,3 +42,6 @@ __pycache__/
 
 # Nested tool crates
 /tools/*/target/
+
+# Android packaging output
+/dist/
