@@ -291,9 +291,12 @@ impl<T: 'static> EventLoop<T> {
                     warn!("TODO: forward onStop notification to application");
                 },
                 MainEvent::Destroy => {
-                    // XXX: maybe exit mainloop to drop things before being
-                    // killed by the OS?
-                    warn!("TODO: forward onDestroy notification to application");
+                    // patched: the activity is being destroyed (config-change
+                    // recreation or user exit). Terminate the event loop so
+                    // android_main returns and the process exits cleanly
+                    // instead of running against a dead activity.
+                    warn!("activity destroyed; exiting event loop");
+                    self.running = false;
                 },
                 MainEvent::InsetsChanged { .. } => {
                     // XXX: how to forward this state to applications?

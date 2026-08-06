@@ -6451,6 +6451,10 @@ impl ApplicationHandler for MinecraftApplication {
                     let position = touch.location;
                     match touch.phase {
                         TouchPhase::Started => {
+                            // Update the cursor position first: touches produce
+                            // no hover events, so without this the click would
+                            // use a stale position and hit the wrong widget.
+                            self.handleCursorMove(position, eventLoop, &mut fatalError);
                             // GUIs only accept left clicks; in the world a
                             // touch means right-click (use/place). The first
                             // touch in a world grabs the gameplay cursor.
