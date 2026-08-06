@@ -29,7 +29,6 @@ rsa = "0.9"
 ureq = { version = "2.12", features = ["json"] }
 url = "2.5"
 anyhow = "1.0"
-ash = { version = "0.38", default-features = false, features = ["linked", "debug"] }
 ash-window = "0.13"
 bitflags = "2.6"
 byteorder = "1.5"
@@ -37,9 +36,6 @@ bytes = "1.7"
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 flate2 = "1.0"
-gl = "0.14"
-glutin = "0.32.3"
-glutin-winit = "0.5.0"
 idna = "1.0"
 log = "0.4"
 once_cell = "1.20"
@@ -51,8 +47,19 @@ sha1 = { version = "0.10", features = ["oid"] }
 thiserror = "2.0"
 uuid = { version = "1.10", features = ["serde"] }
 walkdir = "2.5"
-winit = "0.30"
+winit = { version = "0.30", features = ["android-native-activity"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+ash = { version = "0.38", default-features = false, features = ["linked", "debug"] }
+gl = "0.14"
+glutin = "0.32.3"
+glutin-winit = "0.5.0"
+
+[target.'cfg(target_os = "android")'.dependencies]
+ash = { version = "0.38", default-features = false, features = ["loaded", "debug"] }
+ndk = "0.9"
+android_logger = "0.14"
 
 [target.'cfg(windows)'.dependencies]
 rodio = { version = "0.17.3", default-features = false, features = ["vorbis"] }
