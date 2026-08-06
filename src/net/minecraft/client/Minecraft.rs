@@ -271,6 +271,17 @@ impl Minecraft {
     }
 
     pub fn run(self) -> anyhow::Result<()> {
+        #[cfg(target_os = "android")]
+        let eventLoop = {
+            use winit::event_loop::EventLoopBuilder;
+            use winit::platform::android::EventLoopBuilderExtAndroid;
+            let app = crate::launcher::android::android_app();
+            EventLoopBuilder::new()
+                .with_android_app(app.clone())
+                .build()
+                .context("failed to create the Android event loop")?
+        };
+        #[cfg(not(target_os = "android"))]
         let eventLoop = EventLoop::new().context("failed to create the desktop event loop")?;
         eventLoop.set_control_flow(ControlFlow::Wait);
         let mut application = MinecraftApplication::new(self);
@@ -6127,6 +6138,7 @@ impl ApplicationHandler for MinecraftApplication {
             .with_title("Minecraft 1.12.2")
             .with_inner_size(LogicalSize::new(minecraft.displayWidth.max(1) as f64, minecraft.displayHeight.max(1) as f64))
             .with_min_inner_size(LogicalSize::new(320.0_f64, 240.0_f64));
+        #[cfg(not(target_os = "android"))]
         if minecraft.fullscreen { attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None))); }
         let (window, renderer) = match DesktopRenderer::create(eventLoop, attributes, &minecraft.gameSettings, &minecraft.gameDir) {
             Ok(output) => output,
