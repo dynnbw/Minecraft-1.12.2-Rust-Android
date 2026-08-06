@@ -135,15 +135,39 @@ where
             access_token,
             user_type,
         } => {
+            #[cfg(target_os = "android")]
+            let gameDir = crate::launcher::android::game_dir();
+            #[cfg(not(target_os = "android"))]
             let gameDir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let resourcePacksDir = gameDir.join("resourcepacks");
             let millis = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis();
-            let username = username.unwrap_or_else(|| format!("Player{}", millis % 1000));
-            let playerId = player_id.unwrap_or_else(|| username.clone());
-            let session = Session::new(username, playerId, access_token.unwrap_or_default(), user_type);
+            // Android has no CLI args: launcher.json in the game dir provides
+            // the session identity. Explicit CLI args still win over it.
+            let (configured_username, configured_player_id, configured_token, configured_user_type) = {
+                #[cfg(target_os = "android")]
+                {
+                    let config = crate::launcher::AndroidLaunchConfig::AndroidLaunchConfig::load(&gameDir);
+                    (config.username, config.player_id, config.access_token, config.user_type)
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    (String::new(), String::new(), String::new(), "legacy".to_owned())
+                }
+            };
+            let username = username
+                .or(if configured_username.is_empty() { None } else { Some(configured_username) })
+                .unwrap_or_else(|| format!("Player{}", millis % 1000));
+            let playerId = player_id
+                .or(if configured_player_id.is_empty() { None } else { Some(configured_player_id) })
+                .unwrap_or_else(|| username.clone());
+            let accessToken = access_token
+                .or(if configured_token.is_empty() { None } else { Some(configured_token) })
+                .unwrap_or_default();
+            let userType = if user_type == "legacy" { configured_user_type } else { user_type };
+            let session = Session::new(username, playerId, accessToken, userType);
             let gameConfiguration = GameConfiguration::new(
                 UserInformation::new(
                     session,
