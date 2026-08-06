@@ -28,6 +28,7 @@ main-menu-preview.png
 # Editors and OS files
 /.idea/
 /.vscode/
+/docs
 .DS_Store
 Thumbs.db
 
@@ -38,3 +39,6 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Nested tool crates
+/tools/*/target/
