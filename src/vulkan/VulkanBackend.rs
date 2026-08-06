@@ -6,6 +6,8 @@ use crate::vulkan::DeviceSelection::{select_physical_device, PhysicalDeviceCandi
 
 #[derive(Debug, Error)]
 pub enum VulkanBackendError {
+    #[error("failed to load the Vulkan loader: {0}")]
+    VulkanLoader(String),
     #[error("failed to create Vulkan instance: {0:?}")]
     Instance(vk::Result),
     #[error("no Vulkan physical device with a graphics queue was found")]
@@ -27,6 +29,16 @@ impl VulkanBackend {
     /// creation are intentionally separate because the client window lifecycle
     /// is driven by Winit 0.30's application handler.
     pub fn probe(settings: &VulkanBackendSettings) -> Result<Self, VulkanBackendError> {
+        #[cfg(target_os = "android")]
+        let entry = {
+            // Android has no statically linkable Vulkan loader; dlopen
+            // libvulkan.so (always present on Android 12+ devices).
+            unsafe {
+                ash::Entry::load()
+                    .map_err(|error| VulkanBackendError::VulkanLoader(error.to_string()))?
+            }
+        };
+        #[cfg(not(target_os = "android"))]
         let entry = Entry::linked();
         let application_name = CString::new("Minecraft 1.12.2 Rust Client").expect("static string");
         let engine_name = CString::new("MC112 Vulkan Compatibility Renderer").expect("static string");
