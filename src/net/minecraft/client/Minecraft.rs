@@ -124,6 +124,22 @@ use crate::renderer::DesktopRenderer::DesktopRenderer;
 // `Minecraft#getLimitFramerate`; loaded worlds continue to use the configured
 // `GameSettings.limitFramerate`.
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
+#[cfg(target_os = "android")]
+struct TouchPress {
+    started: Instant,
+    startedPosition: PhysicalPosition<f64>,
+    /// True when the touch began inside the hotbar strip.
+    isHotbar: bool,
+    hotbarSlot: i32,
+    /// Finger moved beyond the tap threshold; cancels long-press.
+    movedAway: bool,
+}
+
+#[cfg(target_os = "android")]
+const TOUCH_TAP_SLOP: f64 = 32.0;
+#[cfg(target_os = "android")]
+const TOUCH_LONG_PRESS: Duration = Duration::from_secs(3);
+
 const CLIENT_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const RIGHT_CLICK_DELAY_TICKS: i32 = 4;
 
@@ -5267,6 +5283,13 @@ struct MinecraftApplication {
     pendingResizeSince: Option<Instant>,
     #[cfg(target_os = "android")]
     lastTouchPosition: Option<PhysicalPosition<f64>>,
+    #[cfg(target_os = "android")]
+    touchPress: Option<TouchPress>,
+    #[cfg(target_os = "android")]
+    touchLongPressFired: bool,
+    /// Button sent for the active touch (released on touch end).
+    #[cfg(target_os = "android")]
+    touchActiveButton: Option<MouseButton>,
     keyboardModifiers: ModifiersState,
     worldMouseGrabbed: bool,
     windowFocused: bool,
@@ -5459,6 +5482,23 @@ impl MinecraftApplication {
                 }
     }
 
+    /// Maps a physical position to the hotbar slot touched (0-8), or None
+    /// when the position is outside the bottom hotbar strip.
+    #[cfg(target_os = "android")]
+    fn hotbarSlotAt(&self, position: PhysicalPosition<f64>) -> Option<i32> {
+        let extent = self.renderer.as_ref()?.extent();
+        let guiWidth = extent.width as f64;
+        let guiHeight = extent.height as f64;
+        let center = guiWidth / 2.0;
+        if position.y < guiHeight - 22.0 || position.y > guiHeight {
+            return None;
+        }
+        if position.x < center - 91.0 || position.x > center + 91.0 {
+            return None;
+        }
+        Some(((position.x - (center - 91.0)) / 20.0).floor() as i32)
+    }
+
     /// First-person look shared by desktop DeviceEvent::MouseMotion and the
     /// Android touch bridge (touch drag = mouse movement).
     fn applyMouseMotion(&mut self, deltaX: f64, deltaY: f64) {
@@ -5483,6 +5523,12 @@ impl MinecraftApplication {
             pendingResizeSince: None, keyboardModifiers: ModifiersState::empty(), worldMouseGrabbed: false,
             #[cfg(target_os = "android")]
             lastTouchPosition: None,
+            #[cfg(target_os = "android")]
+            touchPress: None,
+            #[cfg(target_os = "android")]
+            touchLongPressFired: false,
+            #[cfg(target_os = "android")]
+            touchActiveButton: None,
             windowFocused: true,
             debugFps: 0,
             framesThisSecond: 0,
@@ -6444,10 +6490,10 @@ impl ApplicationHandler for MinecraftApplication {
                 #[cfg(target_os = "android")]
                 {
                     // Android converts physical-mouse clicks into touchscreen
-                    // motion events; a single finger maps to the right mouse
-                    // button (use/place in world, right-click in GUIs), and
-                    // dragging moves the cursor and turns the first-person
-                    // camera like mouse movement.
+                    // motion events. A single finger on the world surface is a
+                    // right-click; long-pressing destroys (left click held);
+                    // touching the hotbar selects that slot, long-pressing it
+                    // drops the held item (Q). GUIs get a plain left click.
                     let position = touch.location;
                     match touch.phase {
                         TouchPhase::Started => {
@@ -6455,24 +6501,28 @@ impl ApplicationHandler for MinecraftApplication {
                             // no hover events, so without this the click would
                             // use a stale position and hit the wrong widget.
                             self.handleCursorMove(position, eventLoop, &mut fatalError);
-                            // GUIs only accept left clicks; in the world a
-                            // touch means right-click (use/place). The first
-                            // touch in a world grabs the gameplay cursor.
                             let runtime = self.mainMenu.as_ref();
                             let inWorld = runtime.is_some_and(MainMenuRuntime::isWorld);
                             let guiOpen = runtime.is_some_and(|r| {
                                 r.isWorldGuiOpen() || r.isInventoryOpen() || r.isChatOpen()
                             });
-                            let button = if inWorld {
-                                if guiOpen || !self.worldMouseGrabbed {
-                                    MouseButton::Left
-                                } else {
-                                    MouseButton::Right
-                                }
+                            if inWorld && !guiOpen {
+                                // World surface: defer the action until the
+                                // tap/long-press decision is known.
+                                let hotbarSlot = self.hotbarSlotAt(position);
+                                self.touchPress = Some(TouchPress {
+                                    started: Instant::now(),
+                                    startedPosition: position,
+                                    isHotbar: hotbarSlot.is_some(),
+                                    hotbarSlot: hotbarSlot.unwrap_or(-1),
+                                    movedAway: false,
+                                });
+                                self.touchLongPressFired = false;
                             } else {
-                                MouseButton::Left
-                            };
-                            if self.handleMousePress(eventLoop, button, &mut fatalError) { return; }
+                                // GUIs only accept left clicks.
+                                self.touchActiveButton = Some(MouseButton::Left);
+                                if self.handleMousePress(eventLoop, MouseButton::Left, &mut fatalError) { return; }
+                            }
                             self.lastTouchPosition = Some(position);
                         }
                         TouchPhase::Moved => {
@@ -6480,10 +6530,49 @@ impl ApplicationHandler for MinecraftApplication {
                             if let Some(prev) = self.lastTouchPosition {
                                 self.applyMouseMotion(position.x - prev.x, position.y - prev.y);
                             }
+                            if let Some(press) = self.touchPress.as_mut() {
+                                let dx = position.x - press.startedPosition.x;
+                                let dy = position.y - press.startedPosition.y;
+                                if dx * dx + dy * dy > TOUCH_TAP_SLOP * TOUCH_TAP_SLOP {
+                                    press.movedAway = true;
+                                }
+                            }
                             self.lastTouchPosition = Some(position);
                         }
                         TouchPhase::Ended | TouchPhase::Cancelled => {
-                            self.handleMouseRelease(MouseButton::Right);
+                            if let Some(press) = self.touchPress.take() {
+                                if !press.movedAway {
+                                    if self.touchLongPressFired {
+                                        if !press.isHotbar {
+                                            self.handleMouseRelease(MouseButton::Left);
+                                        }
+                                    } else if press.isHotbar {
+                                        let key = match press.hotbarSlot.clamp(0, 8) {
+                                            0 => KeyCode::Digit1,
+                                            1 => KeyCode::Digit2,
+                                            2 => KeyCode::Digit3,
+                                            3 => KeyCode::Digit4,
+                                            4 => KeyCode::Digit5,
+                                            5 => KeyCode::Digit6,
+                                            6 => KeyCode::Digit7,
+                                            7 => KeyCode::Digit8,
+                                            _ => KeyCode::Digit9,
+                                        };
+                                        match self.mainMenu.as_mut().map(|runtime| runtime.worldHotbarKey(key, self.keyboardModifiers)) {
+                                            Some(Err(message)) => log::error!("failed switching hotbar slot: {message}"),
+                                            _ => {}
+                                        }
+                                    } else {
+                                        // Tap in the world = right-click use/place.
+                                        self.touchActiveButton = Some(MouseButton::Right);
+                                        if self.handleMousePress(eventLoop, MouseButton::Right, &mut fatalError) { return; }
+                                        self.handleMouseRelease(MouseButton::Right);
+                                        self.touchActiveButton = None;
+                                    }
+                                }
+                            } else if let Some(button) = self.touchActiveButton.take() {
+                                self.handleMouseRelease(button);
+                            }
                             self.lastTouchPosition = None;
                         }
                     }
@@ -6978,6 +7067,25 @@ impl ApplicationHandler for MinecraftApplication {
     }
 
     fn about_to_wait(&mut self, eventLoop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        if let Some(press) = self.touchPress.as_ref() {
+            if !press.movedAway
+                && !self.touchLongPressFired
+                && press.started.elapsed() >= TOUCH_LONG_PRESS
+            {
+                self.touchLongPressFired = true;
+                if press.isHotbar {
+                    // Long-press the hotbar = Q (drop held item).
+                    match self.mainMenu.as_mut().map(|runtime| runtime.worldHotbarKey(KeyCode::KeyQ, self.keyboardModifiers)) {
+                        Some(Err(message)) => log::error!("failed dropping item on long press: {message}"),
+                        _ => {}
+                    }
+                } else {
+                    // Long-press the world = hold left (destroy block).
+                    self.handleMousePress(eventLoop, MouseButton::Left, &mut None);
+                }
+            }
+        }
         if self.debugKeyDown
             && self.debugCrashKeyDown
             && self

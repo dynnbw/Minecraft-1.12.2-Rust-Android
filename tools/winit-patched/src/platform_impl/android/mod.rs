@@ -146,6 +146,9 @@ pub struct EventLoop<T: 'static> {
     // Last reported absolute mouse position; used to synthesize relative
     // motion deltas for DeviceEvent::MouseMotion (mouse look support).
     last_mouse: Option<(f64, f64)>,
+    // Button pressed via ACTION_BUTTON_PRESS; ACTION_BUTTON_RELEASE arrives
+    // with an empty button_state, so release must use the remembered button.
+    last_aux_button: Option<event::MouseButton>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,6 +199,7 @@ impl<T: 'static> EventLoop<T> {
             ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
             last_mouse: None,
+            last_aux_button: None,
         })
     }
 
@@ -465,9 +469,17 @@ impl<T: 'static> EventLoop<T> {
                         MotionAction::ButtonPress | MotionAction::ButtonRelease => {
                             // android-activity's action_button() links a symbol
                             // missing from ndk-sys 0.6; derive the button from
-                            // button_state instead.
-                            let button = mouse_button();
-                            let state = if matches!(motion_event.action(), MotionAction::ButtonPress) {
+                            // button_state. On BUTTON_RELEASE the state is
+                            // already cleared, so remember what was pressed.
+                            let is_press = matches!(motion_event.action(), MotionAction::ButtonPress);
+                            let button = if is_press {
+                                let button = mouse_button();
+                                self.last_aux_button = Some(button);
+                                button
+                            } else {
+                                self.last_aux_button.take().unwrap_or_else(mouse_button)
+                            };
+                            let state = if is_press {
                                 event::ElementState::Pressed
                             } else {
                                 event::ElementState::Released
