@@ -62,6 +62,7 @@ pub struct GuiVideoSettings {
     guiScaleButton: GuiButton,
     fullscreenButton: GuiButton,
     gammaSlider: GuiOptionSlider,
+    #[cfg(not(target_os = "android"))]
     rendererButton: GuiButton,
     shadersButton: GuiButton,
     backendNotice: String,
@@ -80,6 +81,7 @@ impl Default for GuiVideoSettings {
             guiScaleButton: GuiButton::newWithSize(GUI_SCALE_ID, 0, 0, 150, 20, ""),
             fullscreenButton: GuiButton::newWithSize(USE_FULLSCREEN_ID, 0, 0, 150, 20, ""),
             gammaSlider: GuiOptionSlider::new(GAMMA_ID, 0, 0, 0.0, ""),
+            #[cfg(not(target_os = "android"))]
             rendererButton: GuiButton::newWithSize(RENDERER_SETTINGS_ID, 0, 0, 150, 20, ""),
             shadersButton: GuiButton::newWithSize(SHADERS_ID, 0, 0, 150, 20, "Shaders..."),
             backendNotice: String::new(),
@@ -122,8 +124,11 @@ impl GuiVideoSettings {
         self.fullscreenButton.y = row2;
         self.gammaSlider.GuiButton.x = left;
         self.gammaSlider.GuiButton.y = row2 + 21;
-        self.rendererButton.x = left;
-        self.rendererButton.y = row2 + 42;
+        #[cfg(not(target_os = "android"))]
+        {
+            self.rendererButton.x = left;
+            self.rendererButton.y = row2 + 42;
+        }
         self.shadersButton.x = right;
         self.shadersButton.y = row2 + 42;
         self.doneButton.x = width / 2 - 100;
@@ -184,6 +189,7 @@ impl GuiVideoSettings {
         self.guiScaleButton.drawButton(drawList, fontRendererObj, mouseX, mouseY, partialTicks);
         self.fullscreenButton.drawButton(drawList, fontRendererObj, mouseX, mouseY, partialTicks);
         self.gammaSlider.drawButton(drawList, fontRendererObj, mouseX, mouseY, partialTicks);
+        #[cfg(not(target_os = "android"))]
         self.rendererButton.drawButton(drawList, fontRendererObj, mouseX, mouseY, partialTicks);
         self.shadersButton.drawButton(drawList, fontRendererObj, mouseX, mouseY, partialTicks);
         self.GuiScreen.Gui.drawCenteredString(
@@ -266,6 +272,7 @@ impl GuiVideoSettings {
                 sound: Some(self.fullscreenButton.playPressSound()),
             });
         }
+        #[cfg(not(target_os = "android"))]
         if self.rendererButton.mousePressed(mouseX, mouseY) {
             let next = settings.renderBackend.toggled();
             self.rendererButton.displayString = rendererLabel(next);
@@ -326,7 +333,10 @@ impl GuiVideoSettings {
         self.fullscreenButton.displayString = booleanLabel(locale, "options.fullscreen", settings.fullScreen);
         self.gammaSlider.setSliderValue(settings.gammaSetting.clamp(0.0, 1.0));
         self.gammaSlider.setDisplayString(gammaLabel(locale, settings.gammaSetting));
-        self.rendererButton.displayString = rendererLabel(settings.renderBackend);
+        #[cfg(not(target_os = "android"))]
+        {
+            self.rendererButton.displayString = rendererLabel(settings.renderBackend);
+        }
         self.shadersButton.displayString = "Shaders...".to_owned();
         // OptiFine 1.12.2 shader packs are OpenGL/GLSL resources. The current
         // native backend, rather than the next-launch selection, controls
@@ -434,6 +444,7 @@ fn booleanLabel(locale: &Locale, key: &str, value: bool) -> String {
     )
 }
 
+#[cfg(not(target_os = "android"))]
 fn rendererLabel(backend: RenderBackend) -> String {
     format!("Renderer: {}", backend.displayName())
 }

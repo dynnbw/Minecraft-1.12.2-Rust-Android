@@ -246,6 +246,12 @@ impl GameSettings {
         if let Some(lastServer) = options.get("lastServer") { settings.lastServer = lastServer.to_owned(); }
         settings.resourcePacks = read_string_list(&options, "resourcePacks");
         settings.incompatibleResourcePacks = read_string_list(&options, "incompatibleResourcePacks");
+        #[cfg(target_os = "android")]
+        {
+            // Android builds are Vulkan-only: the OpenGL backend is compiled out.
+            settings.renderBackend = RenderBackend::Vulkan;
+        }
+        #[cfg(not(target_os = "android"))]
         if let Some(backend) = options.get("rustRenderBackend") {
             settings.renderBackend = RenderBackend::parse(backend);
         }

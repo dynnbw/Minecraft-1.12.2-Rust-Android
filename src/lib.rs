@@ -13,6 +13,7 @@ pub mod com;
 pub mod compat;
 pub mod launcher;
 pub mod net;
+#[cfg(not(target_os = "android"))]
 pub mod opengl;
 pub mod renderer;
 pub mod vulkan;
