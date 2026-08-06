@@ -30,6 +30,7 @@ pub enum MainMenuAction {
     OpenLanguage,
     OpenWorldSelection,
     OpenMultiplayer,
+    OpenAccounts,
     Shutdown,
     OpenCopyrightCredits,
     OpenCompatibilityWarning { link: String },
@@ -214,6 +215,12 @@ impl GuiMainMenu {
             width / 2 - 100,
             first_button_y + 24,
             locale.translate_key("menu.multiplayer"),
+        )));
+        self.buttonList.push(MainMenuControl::Button(GuiButton::new(
+            14,
+            width / 2 - 100,
+            first_button_y + 48,
+            "Accounts",
         )));
         self.buttonList.push(MainMenuControl::Button(GuiButton::newWithSize(
             0,
@@ -478,6 +485,7 @@ fn action_for_button(id: i32) -> Option<MainMenuAction> {
         5 => Some(MainMenuAction::OpenLanguage),
         1 => Some(MainMenuAction::OpenWorldSelection),
         2 => Some(MainMenuAction::OpenMultiplayer),
+        14 => Some(MainMenuAction::OpenAccounts),
         4 => Some(MainMenuAction::Shutdown),
         _ => None,
     }
@@ -515,6 +523,7 @@ mod tests {
         assert_eq!(action_for_button(2), Some(MainMenuAction::OpenMultiplayer));
         assert_eq!(action_for_button(4), Some(MainMenuAction::Shutdown));
         assert_eq!(action_for_button(5), Some(MainMenuAction::OpenLanguage));
+        assert_eq!(action_for_button(14), Some(MainMenuAction::OpenAccounts));
     }
 
     #[test]

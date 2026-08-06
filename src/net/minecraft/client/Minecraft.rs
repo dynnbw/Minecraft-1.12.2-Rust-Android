@@ -46,6 +46,11 @@ use crate::net::minecraft::client::gui::GuiLanguage::{GuiLanguage, GuiLanguageAc
 use crate::net::minecraft::client::gui::GuiDisconnected::{GuiDisconnected, GuiDisconnectedAction};
 use crate::net::minecraft::client::gui::GuiDownloadTerrain::GuiDownloadTerrain;
 use crate::net::minecraft::client::gui::GuiMainMenu::{GuiMainMenu, MainMenuAction, MainMenuDate};
+use crate::net::minecraft::client::account::AccountConfig::AccountConfig;
+use crate::net::minecraft::client::gui::GuiAccountManager::{AccountManagerKey, GuiAccountManager, GuiAccountManagerAction};
+use crate::net::minecraft::client::gui::GuiMicrosoftAuth::{GuiMicrosoftAuth, GuiMicrosoftAuthAction};
+use crate::net::minecraft::client::gui::GuiSessionLogin::{GuiSessionLogin, GuiSessionLoginAction};
+use crate::net::minecraft::client::gui::GuiAltCracked::{GuiAltCracked, GuiAltCrackedAction};
 use crate::net::minecraft::client::gui::GuiMultiplayer::{GuiMultiplayer, GuiMultiplayerAction};
 use crate::net::minecraft::client::gui::GuiScreenAddServer::{GuiScreenAddServer, GuiScreenAddServerAction};
 use crate::net::minecraft::client::gui::GuiScreenServerList::{GuiScreenServerList, GuiScreenServerListAction};
@@ -284,6 +289,7 @@ impl Minecraft {
     pub const fn isDemo(&self) -> bool { self.isDemo }
     pub const fn isFullScreen(&self) -> bool { self.fullscreen }
     pub fn getSession(&self) -> &Session { &self.session }
+    pub fn setSession(&mut self, session: Session) { self.session = session; }
     pub fn assetRoot(&self) -> &AssetRoot { &self.assetRoot }
 }
 
@@ -293,6 +299,10 @@ enum ScreenId { MainMenu, Options, Multiplayer, WorldSelection }
 enum ActiveGuiScreen {
     Empty,
     MainMenu(GuiMainMenu),
+    AccountManager(GuiAccountManager),
+    MicrosoftAuth(GuiMicrosoftAuth),
+    SessionLogin(GuiSessionLogin),
+    OfflineLogin(GuiAltCracked),
     Options(GuiOptions),
     VideoSettings(GuiVideoSettings),
     ShaderSettings(GuiShader),
@@ -342,6 +352,11 @@ enum RuntimeGuiAction {
     Shutdown,
     Switch(ScreenId),
     OpenLanguage(ScreenId),
+    OpenAccountManager { notification: Option<String> },
+    OpenMicrosoftAuth,
+    OpenSessionLogin,
+    OpenOfflineLogin,
+    AccountAuthenticated { session: Session, returnToManager: bool },
     ToggleUnicode,
     SetFov(f32),
     ToggleForceSprint,
@@ -620,6 +635,7 @@ impl DedicatedContainerGui {
 struct MainMenuRuntime {
     locale: Locale,
     fontRendererObj: FontRenderer,
+    accountConfig: AccountConfig,
     currentScreen: ActiveGuiScreen,
     guiRenderer: SoftwareGuiRenderer,
     worldRenderer: VulkanWorldRenderer,
@@ -703,6 +719,7 @@ impl MainMenuRuntime {
         let mut runtime = Self {
             locale,
             fontRendererObj,
+            accountConfig: AccountConfig::load(&minecraft.gameDir),
             currentScreen: ActiveGuiScreen::MainMenu(Self::createMainMenu(minecraft)?),
             guiRenderer: SoftwareGuiRenderer::new(minecraft.resourceManager.clone()),
             worldRenderer,
@@ -3522,6 +3539,10 @@ impl MainMenuRuntime {
         match &mut self.currentScreen {
             ActiveGuiScreen::Empty => {}
             ActiveGuiScreen::MainMenu(screen) => screen.initGui(width, height, current_menu_date(), &self.locale, &self.fontRendererObj),
+            ActiveGuiScreen::AccountManager(screen) => screen.initGui(width, height, &self.accountConfig),
+            ActiveGuiScreen::MicrosoftAuth(screen) => screen.initGui(width, height),
+            ActiveGuiScreen::SessionLogin(screen) => screen.initGui(width, height),
+            ActiveGuiScreen::OfflineLogin(screen) => screen.initGui(width, height),
             ActiveGuiScreen::Options(screen) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             ActiveGuiScreen::VideoSettings(screen) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             ActiveGuiScreen::ShaderSettings(screen) => screen.initGui(width, height),
@@ -3552,6 +3573,29 @@ impl MainMenuRuntime {
         self.lastGuiFrame = Instant::now();
         self.initCurrentScreen(minecraft);
         Ok(())
+    }
+
+    fn openAccountManager(&mut self, minecraft: &Minecraft, notification: Option<String>) {
+        self.currentScreen = ActiveGuiScreen::AccountManager(match notification {
+            Some(message) => GuiAccountManager::withNotification(message),
+            None => GuiAccountManager::new(),
+        });
+        self.initCurrentScreen(minecraft);
+    }
+
+    fn openMicrosoftAuth(&mut self, minecraft: &Minecraft) {
+        self.currentScreen = ActiveGuiScreen::MicrosoftAuth(GuiMicrosoftAuth::new());
+        self.initCurrentScreen(minecraft);
+    }
+
+    fn openSessionLogin(&mut self, minecraft: &Minecraft) {
+        self.currentScreen = ActiveGuiScreen::SessionLogin(GuiSessionLogin::new());
+        self.initCurrentScreen(minecraft);
+    }
+
+    fn openOfflineLogin(&mut self, minecraft: &Minecraft) {
+        self.currentScreen = ActiveGuiScreen::OfflineLogin(GuiAltCracked::new());
+        self.initCurrentScreen(minecraft);
     }
 
     fn openVideoSettings(&mut self, minecraft: &Minecraft) {
@@ -4014,6 +4058,10 @@ impl MainMenuRuntime {
                 &mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks,
                 systemTimeMillis, minecraft.getVersionType(), self.mouseInsideWindow,
             ),
+            ActiveGuiScreen::AccountManager(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks, &self.accountConfig, minecraft.getSession().getUsername()),
+            ActiveGuiScreen::MicrosoftAuth(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
+            ActiveGuiScreen::SessionLogin(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
+            ActiveGuiScreen::OfflineLogin(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::Options(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::VideoSettings(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::ShaderSettings(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
@@ -4202,6 +4250,32 @@ impl MainMenuRuntime {
         let mut pendingLocalSounds = Vec::new();
         let mut pendingWorldEffects = Vec::new();
         let (mut redraw, action) = match &mut self.currentScreen {
+            ActiveGuiScreen::AccountManager(screen) => {
+                let session = screen.updateScreen(&mut self.accountConfig);
+                let avatarTextures = screen.takePendingAvatarTextures();
+                for (location, image) in avatarTextures {
+                    self.guiRenderer.registerDynamicTexture(location, image);
+                }
+                (true, session.map(|session| RuntimeGuiAction::AccountAuthenticated { session, returnToManager: false }))
+            }
+            ActiveGuiScreen::MicrosoftAuth(screen) => {
+                let action = screen.updateScreen(&mut self.accountConfig).and_then(|action| match action {
+                    GuiMicrosoftAuthAction::Authenticated(session) => Some(RuntimeGuiAction::AccountAuthenticated { session, returnToManager: true }),
+                    _ => None,
+                });
+                (true, action)
+            }
+            ActiveGuiScreen::SessionLogin(screen) => {
+                let action = screen.updateScreen(&mut self.accountConfig).and_then(|action| match action {
+                    GuiSessionLoginAction::Authenticated(session) => Some(RuntimeGuiAction::AccountAuthenticated { session, returnToManager: false }),
+                    _ => None,
+                });
+                (true, action)
+            }
+            ActiveGuiScreen::OfflineLogin(screen) => {
+                let session = screen.updateScreen();
+                (true, session.map(|session| RuntimeGuiAction::AccountAuthenticated { session, returnToManager: false }))
+            },
             ActiveGuiScreen::ShaderSettings(screen) => (screen.updateScreen(), None),
             ActiveGuiScreen::Multiplayer(screen) => (screen.updateScreen(), None),
             ActiveGuiScreen::AddServer { screen, .. } => { screen.updateScreen(); (true, None) }
@@ -4542,6 +4616,7 @@ impl MainMenuRuntime {
         mouseButton: i32,
         shiftDown: bool,
         settings: &GameSettings,
+        currentAccessToken: &str,
     ) -> Option<RuntimeGuiAction> {
         let (mouseX, mouseY) = self.cursorGuiPosition(framebufferWidth, framebufferHeight);
         let worldGuiOpen = self.isWorldGuiOpen();
@@ -4676,9 +4751,44 @@ impl MainMenuRuntime {
                     MainMenuAction::OpenLanguage => RuntimeGuiAction::OpenLanguage(ScreenId::MainMenu),
                     MainMenuAction::OpenWorldSelection => RuntimeGuiAction::Switch(ScreenId::WorldSelection),
                     MainMenuAction::OpenMultiplayer => RuntimeGuiAction::Switch(ScreenId::Multiplayer),
+                    MainMenuAction::OpenAccounts => RuntimeGuiAction::OpenAccountManager { notification: None },
                     MainMenuAction::Shutdown => RuntimeGuiAction::Shutdown,
                     MainMenuAction::OpenCopyrightCredits => RuntimeGuiAction::NotConnected("GuiWinGame"),
                     MainMenuAction::OpenCompatibilityWarning { .. } => RuntimeGuiAction::NotConnected("GuiConfirmOpenLink"),
+                }
+            }),
+            ActiveGuiScreen::AccountManager(screen) => screen.mouseClicked(mouseX, mouseY, mouseButton, &mut self.accountConfig, currentAccessToken).map(|interaction| {
+                playGuiSound(soundHandler, interaction.sound.as_ref());
+                match interaction.action {
+                    GuiAccountManagerAction::Back => RuntimeGuiAction::Switch(ScreenId::MainMenu),
+                    GuiAccountManagerAction::OpenMicrosoft => RuntimeGuiAction::OpenMicrosoftAuth,
+                    GuiAccountManagerAction::OpenOffline => RuntimeGuiAction::OpenOfflineLogin,
+                    GuiAccountManagerAction::OpenToken => RuntimeGuiAction::OpenSessionLogin,
+                    GuiAccountManagerAction::None => RuntimeGuiAction::None,
+                }
+            }),
+            ActiveGuiScreen::MicrosoftAuth(screen) => screen.mouseClicked(mouseX, mouseY, mouseButton).map(|interaction| {
+                playGuiSound(soundHandler, interaction.sound.as_ref());
+                match interaction.action {
+                    GuiMicrosoftAuthAction::Cancel => RuntimeGuiAction::OpenAccountManager { notification: None },
+                    GuiMicrosoftAuthAction::Authenticated(session) => RuntimeGuiAction::AccountAuthenticated { session, returnToManager: true },
+                    GuiMicrosoftAuthAction::None => RuntimeGuiAction::None,
+                }
+            }),
+            ActiveGuiScreen::SessionLogin(screen) => screen.mouseClicked(mouseX, mouseY, mouseButton, &self.fontRendererObj).map(|interaction| {
+                playGuiSound(soundHandler, interaction.sound.as_ref());
+                match interaction.action {
+                    GuiSessionLoginAction::Cancel => RuntimeGuiAction::OpenAccountManager { notification: None },
+                    GuiSessionLoginAction::Authenticated(session) => RuntimeGuiAction::AccountAuthenticated { session, returnToManager: false },
+                    GuiSessionLoginAction::None => RuntimeGuiAction::None,
+                }
+            }),
+            ActiveGuiScreen::OfflineLogin(screen) => screen.mouseClicked(mouseX, mouseY, mouseButton, &self.fontRendererObj).map(|interaction| {
+                playGuiSound(soundHandler, interaction.sound.as_ref());
+                match interaction.action {
+                    GuiAltCrackedAction::Cancel => RuntimeGuiAction::OpenAccountManager { notification: None },
+                    GuiAltCrackedAction::Authenticated(session) => RuntimeGuiAction::AccountAuthenticated { session, returnToManager: false },
+                    GuiAltCrackedAction::None => RuntimeGuiAction::None,
                 }
             }),
             ActiveGuiScreen::Options(screen) => screen.mouseClicked(mouseX, mouseY, 0, &self.locale).map(|interaction| {
@@ -4831,6 +4941,13 @@ impl MainMenuRuntime {
             _ => {}
         }
         match &mut self.currentScreen {
+            ActiveGuiScreen::AccountManager(screen) => {
+                if screen.mouseDragged(mouseY, self.accountConfig.len()) {
+                    Some(RuntimeGuiAction::None)
+                } else {
+                    None
+                }
+            }
             ActiveGuiScreen::Options(screen) => screen.mouseDragged(mouseX, &self.locale).map(|interaction| match interaction.action {
                 GuiOptionsAction::SetFov(value) => RuntimeGuiAction::SetFov(value),
                 _ => RuntimeGuiAction::None,
@@ -4868,6 +4985,7 @@ impl MainMenuRuntime {
             _ => {}
         }
         match &mut self.currentScreen {
+            ActiveGuiScreen::AccountManager(screen) => screen.mouseReleased(),
             ActiveGuiScreen::Options(screen) => screen.mouseReleased(mouseX, mouseY),
             ActiveGuiScreen::VideoSettings(screen) => screen.mouseReleased(mouseX, mouseY),
             ActiveGuiScreen::SoundSettings(screen) => {
@@ -4886,6 +5004,8 @@ impl MainMenuRuntime {
             return screen.typedText(text, &self.fontRendererObj);
         }
         match &mut self.currentScreen {
+            ActiveGuiScreen::SessionLogin(screen) => screen.typedText(text, &self.fontRendererObj),
+            ActiveGuiScreen::OfflineLogin(screen) => screen.typedText(text, &self.fontRendererObj),
             ActiveGuiScreen::AddServer { screen, .. } => screen.typedText(text, &self.fontRendererObj),
             ActiveGuiScreen::DirectConnect { screen, .. } => screen.typedText(text, &self.fontRendererObj),
             _ => false,
@@ -4919,6 +5039,33 @@ impl MainMenuRuntime {
             KeyCode::Home => Some(GuiTextFieldKey::Home), KeyCode::End => Some(GuiTextFieldKey::End), _ => None,
         };
         match &mut self.currentScreen {
+            ActiveGuiScreen::AccountManager(screen) => {
+                let accountKey = match key {
+                    KeyCode::ArrowUp => Some(AccountManagerKey::Up),
+                    KeyCode::ArrowDown => Some(AccountManagerKey::Down),
+                    KeyCode::Enter | KeyCode::NumpadEnter => Some(AccountManagerKey::Enter),
+                    KeyCode::Delete => Some(AccountManagerKey::Delete),
+                    KeyCode::KeyC if modifiers.control_key() => Some(AccountManagerKey::Copy),
+                    _ => None,
+                };
+                accountKey.and_then(|value| screen.keyPressed(value, modifiers.control_key(), &mut self.accountConfig).map(|_| RuntimeGuiAction::None))
+            }
+            ActiveGuiScreen::SessionLogin(screen) => {
+                if key == KeyCode::Enter || key == KeyCode::NumpadEnter { screen.enterPressed(); return Some(RuntimeGuiAction::None); }
+                if modifiers.control_key() && key == KeyCode::KeyA { screen.selectAll(&self.fontRendererObj); return Some(RuntimeGuiAction::None); }
+                textKey.and_then(|value| screen.keyPressed(value, fieldModifiers, &self.fontRendererObj).then_some(RuntimeGuiAction::None))
+            }
+            ActiveGuiScreen::OfflineLogin(screen) => {
+                if key == KeyCode::Tab { screen.tabPressed(); return Some(RuntimeGuiAction::None); }
+                if key == KeyCode::Enter || key == KeyCode::NumpadEnter {
+                    return Some(match screen.enterPressed() {
+                        GuiAltCrackedAction::Authenticated(session) => RuntimeGuiAction::AccountAuthenticated { session, returnToManager: false },
+                        _ => RuntimeGuiAction::None,
+                    });
+                }
+                if modifiers.control_key() && key == KeyCode::KeyA { screen.selectAll(&self.fontRendererObj); return Some(RuntimeGuiAction::None); }
+                textKey.and_then(|value| screen.keyPressed(value, fieldModifiers, &self.fontRendererObj).then_some(RuntimeGuiAction::None))
+            }
             ActiveGuiScreen::AddServer { screen, editingIndex, .. } => {
                 if key == KeyCode::Tab { screen.tabPressed(); return Some(RuntimeGuiAction::None); }
                 if key == KeyCode::Enter || key == KeyCode::NumpadEnter {
@@ -4960,6 +5107,7 @@ impl MainMenuRuntime {
             _ => {}
         }
         match &mut self.currentScreen {
+            ActiveGuiScreen::AccountManager(screen) => screen.scroll(lines, self.accountConfig.len()),
             ActiveGuiScreen::Multiplayer(screen) => {
                 screen.scroll(lines);
                 true
@@ -4973,6 +5121,12 @@ impl MainMenuRuntime {
     fn escapeAction(&mut self) -> Option<RuntimeGuiAction> {
         match &mut self.currentScreen {
             ActiveGuiScreen::Empty | ActiveGuiScreen::MainMenu(_) => None,
+            ActiveGuiScreen::AccountManager(_) => Some(RuntimeGuiAction::Switch(ScreenId::MainMenu)),
+            ActiveGuiScreen::MicrosoftAuth(screen) => {
+                screen.cancel();
+                Some(RuntimeGuiAction::OpenAccountManager { notification: None })
+            }
+            ActiveGuiScreen::SessionLogin(_) | ActiveGuiScreen::OfflineLogin(_) => Some(RuntimeGuiAction::OpenAccountManager { notification: None }),
             ActiveGuiScreen::Options(_) | ActiveGuiScreen::Multiplayer(_) | ActiveGuiScreen::WorldSelection(_) => Some(RuntimeGuiAction::Switch(ScreenId::MainMenu)),
             ActiveGuiScreen::VideoSettings(_) => Some(RuntimeGuiAction::CloseVideoSettings),
             ActiveGuiScreen::ShaderSettings(screen) if screen.isOptionsView() => {
@@ -5697,6 +5851,33 @@ impl MinecraftApplication {
                 let minecraft = self.minecraft.as_ref().expect("Minecraft state");
                 self.mainMenu.as_mut().expect("GUI runtime").openLanguage(minecraft, parent);
             }
+            RuntimeGuiAction::OpenAccountManager { notification } => {
+                let minecraft = self.minecraft.as_ref().expect("Minecraft state");
+                self.mainMenu.as_mut().expect("GUI runtime").openAccountManager(minecraft, notification);
+            }
+            RuntimeGuiAction::OpenMicrosoftAuth => {
+                let minecraft = self.minecraft.as_ref().expect("Minecraft state");
+                self.mainMenu.as_mut().expect("GUI runtime").openMicrosoftAuth(minecraft);
+            }
+            RuntimeGuiAction::OpenSessionLogin => {
+                let minecraft = self.minecraft.as_ref().expect("Minecraft state");
+                self.mainMenu.as_mut().expect("GUI runtime").openSessionLogin(minecraft);
+            }
+            RuntimeGuiAction::OpenOfflineLogin => {
+                let minecraft = self.minecraft.as_ref().expect("Minecraft state");
+                self.mainMenu.as_mut().expect("GUI runtime").openOfflineLogin(minecraft);
+            }
+            RuntimeGuiAction::AccountAuthenticated { session, returnToManager } => {
+                let username = session.getUsername().to_owned();
+                self.minecraft.as_mut().expect("Minecraft state").setSession(session);
+                if returnToManager {
+                    let minecraft = self.minecraft.as_ref().expect("Minecraft state");
+                    self.mainMenu.as_mut().expect("GUI runtime").openAccountManager(
+                        minecraft,
+                        Some(format!("§aSuccessful login! ({username})§r")),
+                    );
+                }
+            }
             RuntimeGuiAction::ToggleUnicode => {
                 let extent = self.renderer.as_ref().expect("renderer").extent();
                 let minecraft = self.minecraft.as_mut().expect("Minecraft state");
@@ -6249,6 +6430,7 @@ impl ApplicationHandler for MinecraftApplication {
                                 if button == MouseButton::Right { 1 } else { 0 },
                                 self.keyboardModifiers.shift_key(),
                                 &minecraft.gameSettings,
+                                minecraft.getSession().getToken(),
                             )
                         } else { None };
                         if let Some(action) = action {
@@ -6309,6 +6491,7 @@ impl ApplicationHandler for MinecraftApplication {
                             if button == MouseButton::Right { 1 } else { 0 },
                             self.keyboardModifiers.shift_key(),
                             &minecraft.gameSettings,
+                            minecraft.getSession().getToken(),
                         )
                     } else { None };
                     if let Some(action) = action {

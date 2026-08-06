@@ -38,3 +38,7 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Account Manager credentials and local user state
+/config/
+/screenshots/

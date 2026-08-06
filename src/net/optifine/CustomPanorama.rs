@@ -97,3 +97,5 @@ fn parse_properties(bytes: &[u8]) -> HashMap<String, String> {
 fn parse_i32(value: Option<&String>, default: i32) -> i32 {
     value.and_then(|value| value.trim().parse().ok()).unwrap_or(default)
 }
+
+

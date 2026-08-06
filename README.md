@@ -5,7 +5,7 @@
 
 > 使用 Rust 对 Minecraft Java Edition 1.12.2 客户端进行语义级移植，并提供 Vulkan 与 OpenGL 双渲染后端。
 
-当前公开基线：**0.110.0**<br>
+当前公开基线：**0.112.1**<br>
 当前重点平台：**Windows 10/11 x64**<br>
 协议目标：**Minecraft Java Edition 1.12.2 / Protocol 340**
 
@@ -41,7 +41,7 @@
 - `net.minecraft.world`
 - `net.optifine`
 
-项目包含协议 340 的登录、加密和多人游戏数据路径，以及 GUI、HUD、物品栏、容器、资源包、声音、玩家皮肤/披风、方块状态、实体渲染、粒子和维度相关实现。各系统的完成程度并不完全相同，公开发布时不应将本项目描述为原版客户端的无差异替代品。
+项目包含协议 340 的登录、加密和多人游戏数据路径，以及 GUI、HUD、物品栏、容器、资源包、声音、玩家皮肤/披风、方块状态、实体渲染、粒子和维度相关实现。当前版本还包含内置账号管理器、Microsoft 浏览器 OAuth、Token/Offline 会话切换和远程玩家名称标签。各系统的完成程度并不完全相同，公开发布时不应将本项目描述为原版客户端的无差异替代品。
 
 ### Vulkan 渲染后端
 
@@ -70,6 +70,40 @@ OpenGL 路径创建 OpenGL 3.3 Compatibility Profile，主要技术包括：
 - Shader Options、维度目录、include 展开和光影包配置。
 
 **OptiFine 光影仅在 OpenGL 后端启用。** Vulkan 后端不会直接运行传统 OptiFine GLSL 光影包。
+
+### 内置账号管理器
+
+主菜单中的 `Accounts` 页面提供本地账号列表和会话切换，当前支持：
+
+- Microsoft 浏览器 OAuth 登录；
+- 已保存 Microsoft 账号的访问令牌登录和刷新令牌续期；
+- Minecraft Access Token 登录；
+- `M.C` 刷新令牌登录；
+- Offline 用户名会话；
+- 账号排序、删除、双击登录、头像显示和当前账号高亮；
+- 使用当前 Minecraft Access Token 上传 Classic 或 Slim 皮肤。
+
+认证成功后会替换客户端真实 `Session`，并继续使用 1.12.2 的 `NetHandlerLoginClient → joinServer` 认证链，不是只修改界面用户名。
+
+账号数据保存在：
+
+```text
+config/account.json
+```
+
+为保持与参考账号管理器兼容，该文件包含明文刷新令牌和 Minecraft Access Token。仓库的 `.gitignore` 已忽略整个 `config/`，但提交前仍必须检查 Git 变更列表，确保没有通过强制添加、旧提交或其他路径泄露账号凭据。
+
+### 远程玩家名称标签
+
+玩家名称标签按 Minecraft 1.12.2 的 `RenderLivingBase`、`RenderPlayer`、`ScorePlayerTeam` 与 `Scoreboard` 行为实现，包括：
+
+- 普通玩家 64 格、潜行玩家 32 格显示距离；
+- 队伍前缀、后缀、颜色与四种名称可见规则；
+- 友军隐身可见和旁观者相关判断；
+- 普通名牌的穿墙暗色层与深度测试亮色层；
+- 潜行名牌的遮挡和深度写入规则；
+- 10 格内显示记分板显示槽 2 的分数与目标名称；
+- 第三人称不显示本地玩家自己的名称。
 
 ### 资源系统
 
@@ -401,7 +435,7 @@ cargo run --release -- run ^
   --username Player
 ```
 
-仓库不包含 Microsoft OAuth 登录器。连接需要正版会话的服务器时，应由合法外部启动器或代理提供有效会话信息。不要把访问令牌写入 README、提交记录、脚本或公开日志。
+仓库已经包含内置账号管理器与 Microsoft 浏览器 OAuth。也可以继续通过启动参数从合法外部启动器传入会话信息。无论使用哪种方式，都不要把访问令牌、刷新令牌、`config/account.json`、截图中的账号信息或认证日志提交到 GitHub。
 
 其他工具命令：
 
@@ -516,7 +550,8 @@ cargo run --release
 - 单人集成服务器不属于当前公开基线；
 - 部分少见实体、TileEntity、交互或视觉边缘情况仍可能与原版存在差异；
 - 任意第三方 OptiFine 光影包的普遍兼容性未作保证；
-- Microsoft 账户登录需要外部合法会话来源；
+- 内置 Microsoft 登录依赖 Microsoft/Xbox/Minecraft 在线认证服务，服务端策略、二次验证或账号状态可能导致登录失败；
+- `config/account.json` 保存明文令牌，只能保留在可信本地环境中；
 - 不捆绑原版资产，因此首次运行前必须导入资源。
 
 发现差异时，应提供：
@@ -548,6 +583,7 @@ RustCraft-Public 仅作为经过真实运行验证的渲染工程参考，用于
 
 - 本项目与 Mojang Studios、Microsoft、MCP、OptiFine 均无官方隶属或认可关系。
 - “Minecraft”及相关资产归其权利人所有。
-- 本仓库不授予任何 Minecraft、MCP、OptiFine、RustCraft、光影包或材质包的再分发权。
+- 本仓库不授予任何 Minecraft、MCP、OptiFine、RustCraft、Exhibition-Reborn、光影包或材质包的再分发权。
+- 账号管理器的交互与行为参考 Exhibition-Reborn；仓库不包含其原始 Java 二进制、专有资源或品牌资产。
 - 使用者必须自行拥有合法的 Minecraft 资源来源并遵守相关许可和服务条款。
 - 仓库代码的使用权限以根目录 `LICENSE` 为准。
