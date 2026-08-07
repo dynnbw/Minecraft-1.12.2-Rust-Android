@@ -33,12 +33,11 @@
 ### 已知限制
 
 - **无触摸 UI**:触屏输入不会操作游戏,必须使用物理键鼠
-- **视角转动是合成增量**:Android 没有原生相对鼠标,视角增量由光标位移合成,指针移到屏幕边缘后视角停止转动
+- **视角转动是相对增量**:进入世界后通过窗口指针捕获(pointer capture)锁定物理鼠标,系统直接上报相对位移;菜单中仍为绝对光标
 - **系统栏区域未覆盖**:Android 12+ 上系统栏(横屏时位于侧边)仍占约 106px,全屏沉浸待完善
 - **无音频**:Android 构建为静音(音频后端 no-op),APK 打包时剔除了全部声音资源
 - **无 OptiFine 光影**:光影为 OpenGL 后端专属,Android 仅 Vulkan
 - **无软键盘 IME**:聊天输入需要物理键盘
-- **长按判定**:长按阈值 3 秒,依赖系统定时唤醒;不同设备的触摸采样频率可能影响判定
 - **单机不可用**:单人集成服务器不在项目基线
 
 ### 明确不做(当前范围)
@@ -122,6 +121,7 @@ adb shell am start -n net.mc112rust.client/android.app.NativeActivity
 - **入口**:cdylib 导出 `android_main`(NativeActivity),与桌面 `main()` 共享同一个 `Main::main` 游戏入口
 - **窗口/事件**:winit 0.30 `ApplicationHandler` 模型(resumed/suspended/window_event/device_event)
 - **winit 鼠标补丁**(`tools/winit-patched`):上游 winit 0.30.13 未实现 Android 鼠标事件。补丁将 `SOURCE_MOUSE` 事件映射为 `CursorMoved`/`MouseInput`/`MouseWheel`,并合成 `DeviceEvent::MouseMotion` 相对增量;同时让 `set_cursor_grab` 接受请求(Android 无原生光标锁定,游戏以此进入第一人称模式)
+- **指针捕获(相对鼠标)**:游戏进入第一人称时经 JNI 请求窗口指针捕获(`View.requestPointerCapture`,UI 线程执行)。捕获后系统隐藏并锁定光标,鼠标事件切换为 `SOURCE_MOUSE_RELATIVE`,X/Y 直接携带位移增量,视角转动不再受屏幕边缘限制;菜单打开/失焦时自动释放
 - **Vulkan 适配**:
   - swapchain 尺寸读取 ANativeWindow 真实值(而非 winit 报告值)
   - 容忍 `VK_SUBOPTIMAL_KHR`(Adreno 在非 IDENTITY transform 下每帧报告;重建会使帧循环降到 ~1 fps)

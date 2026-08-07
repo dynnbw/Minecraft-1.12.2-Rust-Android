@@ -65,6 +65,47 @@ mod platform {
         }
     }
 
+    /// Toggles window pointer capture for the physical mouse. While capture
+    /// is active the cursor is locked and mouse motion events switch to
+    /// SOURCE_MOUSE_RELATIVE with X/Y reporting movement deltas, which lets
+    /// first-person look keep rotating past the screen edge (absolute hover
+    /// positions clamp there). Must run on the UI thread (ViewRootImpl checks
+    /// the owning thread), so dispatch through android-activity's main-thread
+    /// executor.
+    pub fn set_pointer_capture(captured: bool) {
+        let app = android_app().clone();
+        app.clone().run_on_java_main_thread(Box::new(move || {
+            use jni::objects::JObject;
+
+            let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) }) else {
+                log::warn!("set_pointer_capture: no JavaVM");
+                return;
+            };
+            let Ok(mut env) = vm.attach_current_thread() else {
+                log::warn!("set_pointer_capture: attach_current_thread failed");
+                return;
+            };
+            let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as jni::sys::jobject) };
+            let Ok(window) = env.call_method(&activity, "getWindow", "()Landroid/view/Window;", &[]) else {
+                log::warn!("set_pointer_capture: getWindow failed");
+                return;
+            };
+            let Ok(window) = window.l() else { return; };
+            let Ok(decor) = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[]) else {
+                log::warn!("set_pointer_capture: getDecorView failed");
+                return;
+            };
+            let Ok(decor) = decor.l() else { return; };
+            let method = if captured { "requestPointerCapture" } else { "releasePointerCapture" };
+            let request_ok = env.call_method(&decor, method, "()V", &[]).is_ok();
+            let has_capture = env
+                .call_method(&decor, "hasPointerCapture", "()Z", &[])
+                .and_then(|value| value.z())
+                .unwrap_or(false);
+            log::info!("pointer capture {captured}: request_ok={request_ok} hasPointerCapture={has_capture}");
+        }));
+    }
+
     /// Physical screen size in pixels (DisplayMetrics). Touch coordinates on
     /// Android are screen pixels, while the swapchain renders at the
     /// ANativeWindow size (which excludes the system bar); hit-testing needs

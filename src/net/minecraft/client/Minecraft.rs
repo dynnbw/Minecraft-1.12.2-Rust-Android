@@ -5638,6 +5638,30 @@ impl MinecraftApplication {
                 }
     }
 
+    /// Fires the 3s touch long-press. Hotbar long-press drops the held item
+    /// (Q); world long-press starts a left-click attack (destroying the
+    /// targeted block). Callable from about_to_wait, touch Moved and touch
+    /// Ended so a blocking event loop can never prevent it from firing.
+    #[cfg(target_os = "android")]
+    fn fireTouchLongPress(&mut self, eventLoop: &ActiveEventLoop, fatalError: &mut Option<anyhow::Error>) {
+        let isHotbar = self.touchPress.as_ref().is_some_and(|press| press.isHotbar);
+        let hotbarSlot = self.touchPress.as_ref().map(|press| press.hotbarSlot).unwrap_or(-1);
+        self.touchLongPressFired = true;
+        if isHotbar {
+            let result = self
+                .mainMenu
+                .as_mut()
+                .map(|runtime| runtime.worldHotbarKey(KeyCode::KeyQ, self.keyboardModifiers));
+            log::info!("touch long-press fired: hotbar slot={hotbarSlot} drop result={result:?}");
+            if let Some(Err(message)) = result {
+                log::error!("failed dropping item on long press: {message}");
+            }
+        } else {
+            log::info!("touch long-press fired: world attack");
+            self.handleMousePress(eventLoop, MouseButton::Left, fatalError);
+        }
+    }
+
     /// Maps a physical position to the hotbar slot touched (0-8), or None
     /// when the position is outside the bottom hotbar strip.
     ///
@@ -6049,6 +6073,10 @@ impl MinecraftApplication {
                 Ok(()) => {
                     window.set_cursor_visible(false);
                     self.worldMouseGrabbed = true;
+                    #[cfg(target_os = "android")]
+                    // Lock the physical-mouse cursor (relative deltas) so
+                    // look rotation never stops at the screen edge.
+                    crate::launcher::android::set_pointer_capture(true);
                 }
                 Err(error) => {
                     log::warn!("Unable to grab the Minecraft mouse cursor: {error}");
@@ -6061,6 +6089,8 @@ impl MinecraftApplication {
             }
             window.set_cursor_visible(true);
             self.worldMouseGrabbed = false;
+            #[cfg(target_os = "android")]
+            crate::launcher::android::set_pointer_capture(false);
             if let Some(runtime) = self.mainMenu.as_mut() {
                 // Vanilla calls sendClickBlockToController(false) when gameplay
                 // focus is lost, which aborts any in-progress dig.
@@ -6739,13 +6769,40 @@ impl ApplicationHandler for MinecraftApplication {
                                 let dy = position.y - press.startedPosition.y;
                                 if dx * dx + dy * dy > TOUCH_TAP_SLOP * TOUCH_TAP_SLOP {
                                     press.movedAway = true;
+                                    log::debug!("touch moved away from press: dx={dx:.1} dy={dy:.1}");
                                 }
+                            }
+                            // The 3s timer may have expired mid-hold; every
+                            // event during the hold is also a chance to fire
+                            // (about_to_wait can be blocked in ControlFlow::Wait).
+                            if self.touchPress.as_ref().is_some_and(|press| {
+                                !press.movedAway
+                                    && !self.touchLongPressFired
+                                    && press.started.elapsed() >= TOUCH_LONG_PRESS
+                            }) {
+                                self.fireTouchLongPress(eventLoop, &mut fatalError);
                             }
                             self.lastTouchPosition = Some(position);
                         }
                         TouchPhase::Ended | TouchPhase::Cancelled => {
+                            // Fallback: if the hold expired but no timer path
+                            // fired yet, fire now so the release decides on a
+                            // long-press instead of a tap.
+                            if self.touchPress.as_ref().is_some_and(|press| {
+                                !press.movedAway
+                                    && !self.touchLongPressFired
+                                    && press.started.elapsed() >= TOUCH_LONG_PRESS
+                            }) {
+                                self.fireTouchLongPress(eventLoop, &mut fatalError);
+                            }
                             if let Some(press) = self.touchPress.take() {
                                 eventLoop.set_control_flow(ControlFlow::Wait);
+                                log::debug!(
+                                    "touch Ended: longPressFired={} movedAway={} held={:?}",
+                                    self.touchLongPressFired,
+                                    press.movedAway,
+                                    press.started.elapsed(),
+                                );
                                 if !press.movedAway {
                                     if self.touchLongPressFired {
                                         if !press.isHotbar {
@@ -7275,23 +7332,12 @@ impl ApplicationHandler for MinecraftApplication {
 
     fn about_to_wait(&mut self, eventLoop: &ActiveEventLoop) {
         #[cfg(target_os = "android")]
-        if let Some(press) = self.touchPress.as_ref() {
-            if !press.movedAway
+        if self.touchPress.as_ref().is_some_and(|press| {
+            !press.movedAway
                 && !self.touchLongPressFired
                 && press.started.elapsed() >= TOUCH_LONG_PRESS
-            {
-                self.touchLongPressFired = true;
-                if press.isHotbar {
-                    // Long-press the hotbar = Q (drop held item).
-                    match self.mainMenu.as_mut().map(|runtime| runtime.worldHotbarKey(KeyCode::KeyQ, self.keyboardModifiers)) {
-                        Some(Err(message)) => log::error!("failed dropping item on long press: {message}"),
-                        _ => {}
-                    }
-                } else {
-                    // Long-press the world = hold left (destroy block).
-                    self.handleMousePress(eventLoop, MouseButton::Left, &mut None);
-                }
-            }
+        }) {
+            self.fireTouchLongPress(eventLoop, &mut None);
         }
         if self.debugKeyDown
             && self.debugCrashKeyDown
@@ -7349,22 +7395,36 @@ impl ApplicationHandler for MinecraftApplication {
             while self.nextTickDeadline <= now { self.nextTickDeadline += CLIENT_TICK_INTERVAL; }
         }
 
-        if self.window.is_some() && self.mainMenu.is_some() {
+        let wakeup = if self.window.is_some() && self.mainMenu.is_some() {
             if self.isFramerateLimitBelowMax() {
                 if now >= self.nextFrameDeadline {
                     self.requestRedraw();
                 }
-                eventLoop.set_control_flow(ControlFlow::WaitUntil(
-                    self.nextFrameDeadline.min(self.nextTickDeadline),
-                ));
+                Some(self.nextFrameDeadline.min(self.nextTickDeadline))
             } else {
                 // 1.12.2 Unlimited: do not insert a frame-deadline wait. Winit
                 // Poll is the `Display.sync`-free equivalent for this backend.
                 self.requestRedraw();
-                eventLoop.set_control_flow(ControlFlow::Poll);
+                None
             }
         } else {
-            eventLoop.set_control_flow(ControlFlow::WaitUntil(self.nextTickDeadline));
+            Some(self.nextTickDeadline)
+        };
+        #[cfg(target_os = "android")]
+        let wakeup = wakeup.and_then(|wakeup| {
+            let press = self.touchPress.as_ref()?;
+            if press.movedAway || self.touchLongPressFired {
+                Some(wakeup)
+            } else {
+                // A resting finger produces no input events; guarantee a
+                // wakeup at the 3s long-press deadline in addition to the
+                // frame loop's own deadline.
+                Some(wakeup.min(press.started + TOUCH_LONG_PRESS))
+            }
+        });
+        match wakeup {
+            Some(deadline) => eventLoop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => eventLoop.set_control_flow(ControlFlow::Poll),
         }
     }
 }

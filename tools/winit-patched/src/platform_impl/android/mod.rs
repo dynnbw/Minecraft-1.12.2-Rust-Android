@@ -203,6 +203,44 @@ impl<T: 'static> EventLoop<T> {
         })
     }
 
+    /// Emits `DeviceEvent::MouseMotion` for an Android mouse event.
+    ///
+    /// With window pointer capture active (source `MouseRelative`) the cursor
+    /// is locked and the event's X/Y are already the movement deltas; without
+    /// capture they are absolute positions, so the delta is the difference
+    /// from the previous position (Android has no native relative mouse).
+    fn emit_relative_motion<F>(
+        &mut self,
+        captured: bool,
+        position: PhysicalPosition<f64>,
+        device_id: event::DeviceId,
+        callback: &mut F,
+    ) where
+        F: FnMut(event::Event<T>, &RootAEL),
+    {
+        let delta = if captured {
+            (position.x, position.y)
+        } else if let Some((last_x, last_y)) = self.last_mouse {
+            (position.x - last_x, position.y - last_y)
+        } else {
+            self.last_mouse = Some((position.x, position.y));
+            return;
+        };
+        if captured {
+            // Deltas are self-contained; never keep them as a baseline.
+            self.last_mouse = None;
+        } else {
+            self.last_mouse = Some((position.x, position.y));
+        }
+        if delta.0 != 0.0 || delta.1 != 0.0 {
+            let device_event = event::Event::DeviceEvent {
+                device_id,
+                event: event::DeviceEvent::MouseMotion { delta },
+            };
+            callback(device_event, self.window_target());
+        }
+    }
+
     fn single_iteration<F>(&mut self, main_event: Option<MainEvent<'_>>, callback: &mut F)
     where
         F: FnMut(event::Event<T>, &RootAEL),
@@ -424,25 +462,34 @@ impl<T: 'static> EventLoop<T> {
                     };
                     match motion_event.action() {
                         MotionAction::HoverMove => {
-                            let event = event::Event::WindowEvent {
-                                window_id,
-                                event: event::WindowEvent::CursorMoved { device_id, position },
-                            };
-                            callback(event, self.window_target());
+                            // Captured pointer events carry the deltas in X/Y;
+                            // emit them without an absolute CursorMoved.
+                            let captured = source == Source::MouseRelative;
+                            if !captured {
+                                let event = event::Event::WindowEvent {
+                                    window_id,
+                                    event: event::WindowEvent::CursorMoved { device_id, position },
+                                };
+                                callback(event, self.window_target());
+                            }
                             // Synthesize relative motion so the application's
                             // mouse-look path (DeviceEvent::MouseMotion) works
                             // on Android, which has no native relative mouse.
-                            if let Some((last_x, last_y)) = self.last_mouse {
-                                let delta = (position.x - last_x, position.y - last_y);
-                                if delta.0 != 0.0 || delta.1 != 0.0 {
-                                    let device_event = event::Event::DeviceEvent {
-                                        device_id,
-                                        event: event::DeviceEvent::MouseMotion { delta },
-                                    };
-                                    callback(device_event, self.window_target());
-                                }
+                            self.emit_relative_motion(captured, position, device_id, callback);
+                        }
+                        MotionAction::Move => {
+                            // Mouse drags (button held) arrive as ACTION_MOVE;
+                            // pointer-captured movement is delivered this way
+                            // too, with X/Y carrying the relative deltas.
+                            let captured = source == Source::MouseRelative;
+                            if !captured {
+                                let event = event::Event::WindowEvent {
+                                    window_id,
+                                    event: event::WindowEvent::CursorMoved { device_id, position },
+                                };
+                                callback(event, self.window_target());
                             }
-                            self.last_mouse = Some((position.x, position.y));
+                            self.emit_relative_motion(captured, position, device_id, callback);
                         }
                         MotionAction::Down => {
                             let event = event::Event::WindowEvent {
