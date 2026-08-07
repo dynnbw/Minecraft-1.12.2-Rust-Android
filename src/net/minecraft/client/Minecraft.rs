@@ -717,6 +717,11 @@ struct MainMenuRuntime {
     /// `pack.mcmeta` "language" section; owns the current language and the
     /// sorted language list the GuiLanguage screen renders.
     languageManager: LanguageManager,
+    /// Bedrock-style touch layer runtime (Android). None while the layer is
+    /// disabled; created lazily on the first enabled touch and cleared when
+    /// the app suspends.
+    #[cfg(target_os = "android")]
+    touchRuntime: Option<crate::net::minecraft::client::touch::TouchRuntime>,
 }
 
 impl MainMenuRuntime {
@@ -799,6 +804,8 @@ impl MainMenuRuntime {
             inventoryShiftClickedStack: ItemStack::EMPTY,
             pendingWorldMouseFocus: None,
             languageManager,
+            #[cfg(target_os = "android")]
+            touchRuntime: None,
         };
         runtime.resize(minecraft, framebufferWidth, framebufferHeight);
         Ok(runtime)
@@ -4480,6 +4487,24 @@ impl MainMenuRuntime {
                     // vanilla sprint binding. EntityPlayerSP still executes
                     // every original food, collision and item-use condition.
                     if !modalWorldGuiOpen { movementKeys.sprint |= forceSprint; }
+                    // Bedrock-style touch layer: synthesize the held touch
+                    // keys onto the vanilla movement keys (direct key-binding
+                    // mapping). No-op while the layer is disabled
+                    // (touchRuntime is None). Like the keyboard path, the
+                    // touch keys must not leak through a modal world GUI.
+                    #[cfg(target_os = "android")]
+                    if let Some(runtime) = self.touchRuntime.as_mut() {
+                        let tick = shared.withRead(|state| state.thePlayer.as_ref().map_or(0, |player| player.entity.ticksExisted));
+                        runtime.tick(tick);
+                        if !modalWorldGuiOpen {
+                            movementKeys.forward |= runtime.keys.forward;
+                            movementKeys.back |= runtime.keys.back;
+                            movementKeys.left |= runtime.keys.left;
+                            movementKeys.right |= runtime.keys.right;
+                            movementKeys.jump |= runtime.keys.jump;
+                            movementKeys.sneak |= runtime.keys.sneak || runtime.keys.sneakLocked;
+                        }
+                    }
                     let mut packets = shared.tickLocalPlayer(movementKeys);
                     let (particleSpawns, particleViewPosition) = shared.withWrite(|state| {
                         let requests = state.worldClient.as_mut().map_or_else(Vec::new, |world| world.takeParticleSpawns());
@@ -5490,10 +5515,6 @@ struct MinecraftApplication {
     /// Button sent for the active touch (released on touch end).
     #[cfg(target_os = "android")]
     touchActiveButton: Option<MouseButton>,
-    /// Bedrock-style touch layer runtime (Android). None while disabled or
-    /// suspended; created lazily on the first enabled touch.
-    #[cfg(target_os = "android")]
-    touchRuntime: Option<crate::net::minecraft::client::touch::TouchRuntime>,
     keyboardModifiers: ModifiersState,
     worldMouseGrabbed: bool,
     windowFocused: bool,
@@ -5723,8 +5744,11 @@ impl MinecraftApplication {
 
     /// Bedrock-style touch layer entry. Returns true when the touch was
     /// consumed by a touch widget; false falls through to the legacy bridge.
-    /// Task 3-4 implement the hit-testing; until then every touch falls
-    /// through, so the current behavior is unchanged.
+    /// Only reached when touchEnabled() (the call site gates on it), so the
+    /// layer stays None — and this path is dead — while the option is off.
+    /// Widget hit-testing lands in a later task; for now each call only arms
+    /// the runtime so the per-tick movement synthesis in updateScreen has a
+    /// state to read, and the touch still falls through unchanged.
     #[cfg(target_os = "android")]
     fn touchConsume(
         &mut self,
@@ -5733,6 +5757,8 @@ impl MinecraftApplication {
         _eventLoop: &ActiveEventLoop,
         _fatalError: &mut Option<anyhow::Error>,
     ) -> bool {
+        let Some(mainMenu) = self.mainMenu.as_mut() else { return false; };
+        let _ = mainMenu.touchRuntime.get_or_insert_with(crate::net::minecraft::client::touch::TouchRuntime::new);
         false
     }
 
@@ -5798,8 +5824,6 @@ impl MinecraftApplication {
             touchLongPressFired: false,
             #[cfg(target_os = "android")]
             touchActiveButton: None,
-            #[cfg(target_os = "android")]
-            touchRuntime: None,
             windowFocused: true,
             suspended: false,
             debugFps: 0,
@@ -7465,7 +7489,9 @@ impl ApplicationHandler for MinecraftApplication {
             self.touchPress = None;
             self.lastTouchPosition = None;
             self.touchActiveButton = None;
-            self.touchRuntime = None;
+            if let Some(mainMenu) = self.mainMenu.as_mut() {
+                mainMenu.touchRuntime = None;
+            }
         }
     }
 
