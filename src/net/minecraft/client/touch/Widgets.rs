@@ -181,12 +181,11 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
     // Ascend/descend stack above the jump (shown while flying).
     let ascend = (jumpRect.0 + 8, jumpRect.1 - 8 - 40, 40, 40);
     let descend = (jumpRect.0 + 8, ascend.1 - 8 - 40, 40, 40);
-    // Chat left-mid-upper, pause right-mid-upper (mirrored). Kept above the
-    // DPad top edge (8px gap) so the touch HUD never overlaps the movement
-    // grid; on tall screens it stays in the mid-upper band.
-    let topY = (height / 2 - 60).min(height - 16 - (cell * 3 + gap * 2) - 8 - 40).max(12);
-    let chat = (12, topY, 40, 40);
-    let pause = (width - 12 - 40, topY, 40, 40);
+    // Chat and pause sit side by side at the top edge center (Bedrock:
+    // both at the top of the screen, chat left of pause).
+    let topY = 12;
+    let chat = (width / 2 - 48, topY, 40, 40);
+    let pause = (width / 2 + 8, topY, 40, 40);
     // Backpack: right of the 9th hotbar slot. Hotbar: 9 slots x 20px,
     // centered at the bottom, slot 9 spans [width/2+70, width/2+90].
     let backpack = (width / 2 + 90 + 8, height - 16 - 40, 40, 40);
@@ -226,12 +225,13 @@ mod tests {
         // jump bottom-right (big button)
         let jump = rect(layout.jump);
         assert!(jump.0 > 450 && jump.1 > 130);
-        // chat left, pause right, same vertical band
+        // chat and pause side by side at the top edge center
         let chat = rect(layout.chat);
         let pause = rect(layout.pause);
-        assert_eq!(chat.0, 12);
-        assert!(pause.0 > 500);
-        assert_eq!(chat.1, pause.1);
+        assert_eq!(chat.1, 12);
+        assert_eq!(pause.1, 12);
+        assert!(chat.0 + chat.2 / 2 < 300 && pause.0 + pause.2 / 2 > 300);
+        assert!(chat.0 + chat.2 <= pause.0); // no overlap, chat left of pause
         // backpack right of the 9th hotbar slot (hotbar x ends at 300)
         assert!(rect(layout.backpack).0 >= 300);
         // dpad bottom-left grid

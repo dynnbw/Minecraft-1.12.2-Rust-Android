@@ -1,5 +1,8 @@
 use crate::net::minecraft::client::gui::FontRenderer::FontRenderer;
-use crate::net::minecraft::client::gui::GuiButton::{GuiButton, GuiSoundCommand};
+use crate::net::minecraft::client::gui::GuiButton::{
+    GuiButton, GuiSoundCommand, BUTTON_CLICK_SOUND_PATH,
+};
+use crate::net::minecraft::util::ResourceLocation::ResourceLocation;
 use crate::net::minecraft::client::gui::GuiOptionSlider::GuiOptionSlider;
 use crate::net::minecraft::client::gui::GuiScreen::GuiScreen;
 use crate::net::minecraft::client::resources::Locale::Locale;
@@ -7,6 +10,13 @@ use crate::net::minecraft::client::settings::GameSettings::GameSettings;
 use crate::vulkan::GuiDrawList::GuiDrawList;
 
 const FOV_ID: i32 = 0;
+
+/// Rect of the touch-settings sprite button (Android): right of the
+/// controls row, 40x40. Kept out of buttonList and handled by this screen.
+#[cfg(target_os = "android")]
+fn touch_settings_button_rect(width: i32, height: i32) -> (i32, i32) {
+    (width / 2 + 163, height / 6 + 66)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GuiOptionsAction {
@@ -88,12 +98,14 @@ impl GuiOptions {
             locale.translate_key("options.controls"),
         ));
         // Bedrock-style touch layer (Android): settings button right of the
-        // controls row. Hidden on desktop builds.
+        // controls row. It is drawn with the touch-settings sprite (no text
+        // and no vanilla button background), so it stays out of buttonList
+        // and is handled directly by this screen (sprite draw + hit-test).
+        // Hidden on desktop builds.
         #[cfg(target_os = "android")]
-        self.GuiScreen.buttonList.push(GuiButton::newWithSize(
-            111, width / 2 + 165, height / 6 + 66, 135, 20,
-            "Touch Controls",
-        ));
+        {
+            let _ = (width, height);
+        }
         self.GuiScreen.buttonList.push(GuiButton::newWithSize(
             102, width / 2 - 155, height / 6 + 90, 150, 20,
             locale.translate_key("options.language"),
@@ -153,6 +165,16 @@ impl GuiOptions {
         );
         self.fovSlider.drawButton(drawList, fontRendererObj, mouseX, mouseY, partialTicks);
         self.GuiScreen.drawScreen(drawList, fontRendererObj, mouseX, mouseY, partialTicks);
+        // Bedrock-style touch layer (Android): the touch-settings button is
+        // drawn with its own sprite (no vanilla background, no text).
+        #[cfg(target_os = "android")]
+        {
+            use crate::net::minecraft::client::touch::Draw::draw_sprite;
+            use crate::net::minecraft::client::touch::Widgets::{pick, SETTINGS, SETTINGS_ACTIVE};
+            let (bx, by) = touch_settings_button_rect(self.GuiScreen.width, self.GuiScreen.height);
+            let mouseOver = mouseX >= bx && mouseX < bx + 40 && mouseY >= by && mouseY < by + 40;
+            draw_sprite(drawList, bx, by, 40, 40, pick(mouseOver, SETTINGS, SETTINGS_ACTIVE));
+        }
     }
 
     pub fn mouseClicked(
@@ -163,6 +185,21 @@ impl GuiOptions {
         locale: &Locale,
     ) -> Option<GuiOptionsInteraction> {
         if mouseButton != 0 { return None; }
+        // Bedrock-style touch layer (Android): the touch-settings sprite
+        // button right of the controls row (handled outside buttonList).
+        #[cfg(target_os = "android")]
+        {
+            let (bx, by) = touch_settings_button_rect(self.GuiScreen.width, self.GuiScreen.height);
+            if mouseX >= bx && mouseX < bx + 40 && mouseY >= by && mouseY < by + 40 {
+                return Some(GuiOptionsInteraction {
+                    action: GuiOptionsAction::OpenTouchSettings,
+                    sound: Some(GuiSoundCommand {
+                        event: ResourceLocation::parse(BUTTON_CLICK_SOUND_PATH),
+                        pitch: 1.0,
+                    }),
+                });
+            }
+        }
         if let Some(normalized) = self.fovSlider.mousePressed(mouseX, mouseY) {
             let fov = denormalize_fov(normalized);
             self.fovSlider.setDisplayString(fov_label(locale, fov));
@@ -183,8 +220,6 @@ impl GuiOptions {
                 103 => GuiOptionsAction::OpenChatSettings,
                 105 => GuiOptionsAction::OpenResourcePacks,
                 104 => GuiOptionsAction::OpenSnooper,
-                #[cfg(target_os = "android")]
-                111 => GuiOptionsAction::OpenTouchSettings,
                 200 => GuiOptionsAction::Done,
                 _ => return None,
             };
