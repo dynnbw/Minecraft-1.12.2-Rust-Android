@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 
 // v2: audio was restored on Android, so previously-installed apps must
 // re-extract to pick up the sounds that v1 shipped without.
-const MARKER: &str = ".assets-extracted-v2";
+// v3: the Bedrock-style touch layer bundles textures/gui/touch.png;
+// previously-installed apps must re-extract to pick it up.
+const MARKER: &str = ".assets-extracted-v3";
 
 /// Pure: decide whether extraction is needed for the given marker file.
 pub fn needs_extraction(marker: &Path) -> bool {
