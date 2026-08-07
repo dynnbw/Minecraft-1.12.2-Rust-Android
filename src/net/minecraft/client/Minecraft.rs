@@ -5900,18 +5900,21 @@ impl MinecraftApplication {
         );
         let size = (scaledWidth as i32, scaledHeight as i32);
         // Same tick source as the per-tick movement synthesis in updateScreen.
-        let tick = self
+        let (tick, flying) = self
             .mainMenu
             .as_ref()
             .and_then(|mainMenu| match &mainMenu.currentScreen {
                 ActiveGuiScreen::World { connection, .. } => Some(
                     connection.getSharedPlayState().withRead(|state| {
-                        state.thePlayer.as_ref().map_or(0, |player| player.entity.ticksExisted)
+                        (
+                            state.thePlayer.as_ref().map_or(0, |player| player.entity.ticksExisted),
+                            state.thePlayer.as_ref().is_some_and(|player| player.capabilities.isFlying),
+                        )
                     }),
                 ),
                 _ => None,
             })
-            .unwrap_or(0);
+            .unwrap_or((0, false));
         // One-shot action buttons fire on a Started hit. The widget rects are
         // copied out of the runtime so its borrow ends before the
         // GUI-opening calls below; every action opens/closes a GUI screen, so
@@ -6018,38 +6021,26 @@ impl MinecraftApplication {
                 return true;
             }
         }
-        // Held widgets (dpad/jump/sneak/ascend/descend) route through the runtime.
+        // Held widgets (dpad/jump/sneak/ascend/descend) route through the
+        // runtime. Ascend/descend are only hittable while flying.
         if self.mainMenu.as_mut().is_some_and(|mainMenu| {
             mainMenu.touchRuntime.as_mut().is_some_and(|runtime| {
-                runtime.handle_touch_widget(phase, id, position, size, tick)
+                runtime.handle_touch_widget(phase, id, position, size, tick, flying)
             })
         }) {
             return true;
         }
-        // Container GUI open and the touch hit no widget: position the cursor
-        // at the touch point and click the slot underneath through the
-        // existing inventory-click path (left click only).
+        // Container GUI open and the touch hit no widget: route the click
+        // through the exact legacy press path (cursor move + press, with
+        // touchActiveButton set so the later Ended release pairs up), so the
+        // inventory pick-up/place behaviour is identical to the touch-off
+        // bridge.
         if matches!(phase, TouchPhase::Started)
             && self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen)
         {
             self.handleCursorMove(location, eventLoop, fatalError);
-            let clicked = match (self.renderer.as_ref(), self.mainMenu.as_mut()) {
-                (Some(renderer), Some(mainMenu)) => {
-                    let extent = renderer.extent();
-                    mainMenu.inventoryMouseClicked(
-                        extent.width,
-                        extent.height,
-                        MouseButton::Left,
-                        self.keyboardModifiers,
-                    )
-                }
-                _ => Ok(false),
-            };
-            match clicked {
-                Ok(true) => self.requestRedraw(),
-                Ok(false) => {}
-                Err(message) => log::error!("failed sending inventory click: {message}"),
-            }
+            self.touchActiveButton = Some(MouseButton::Left);
+            let _ = self.handleMousePress(eventLoop, MouseButton::Left, fatalError);
             return true;
         }
         false // fall through to the legacy bridge (tap place / long-press / look swipe)

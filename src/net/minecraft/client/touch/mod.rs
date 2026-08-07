@@ -62,19 +62,24 @@ impl TouchRuntime {
         }
     }
 
-    fn hit(&self, position: (f64, f64)) -> Option<HeldKind> {
+    fn hit(&self, position: (f64, f64), flying: bool) -> Option<HeldKind> {
+        // The DPad center cell is the sneak button (below forward, left of
+        // right); the outer eight cells are directions.
+        if Widgets::hit_test(&self.layout.sneak, position) { return Some(HeldKind::Sneak); }
         if let Some(direction) = self.layout.dpad.direction_at(position) {
             return Some(HeldKind::Dpad(direction));
         }
         if Widgets::hit_test(&self.layout.jump, position) { return Some(HeldKind::Jump); }
-        if Widgets::hit_test(&self.layout.sneak, position) { return Some(HeldKind::Sneak); }
-        if Widgets::hit_test(&self.layout.ascend, position) { return Some(HeldKind::Ascend); }
-        if Widgets::hit_test(&self.layout.descend, position) { return Some(HeldKind::Descend); }
+        // Ascend/descend exist only while flying; outside flight they are
+        // neither drawn nor hittable (the touch falls through).
+        if flying && Widgets::hit_test(&self.layout.ascend, position) { return Some(HeldKind::Ascend); }
+        if flying && Widgets::hit_test(&self.layout.descend, position) { return Some(HeldKind::Descend); }
         None
     }
 
     /// Touch Started/Moved on a widget: returns true when consumed by a
-    /// widget (false = fall through to the legacy bridge).
+    /// widget (false = fall through to the legacy bridge). `flying` gates
+    /// the ascend/descend buttons (only hittable while flying).
     pub fn handle_touch_widget(
         &mut self,
         phase: winit::event::TouchPhase,
@@ -82,11 +87,12 @@ impl TouchRuntime {
         position: (f64, f64),
         size: (i32, i32),
         tick: i32,
+        flying: bool,
     ) -> bool {
         self.rebuildLayout(size);
         match phase {
             winit::event::TouchPhase::Started => {
-                if let Some(kind) = self.hit(position) {
+                if let Some(kind) = self.hit(position, flying) {
                     self.buttonHeld.insert(id, kind);
                     self.pointers.started(id, position);
                     self.apply_one(kind);
@@ -100,7 +106,7 @@ impl TouchRuntime {
             winit::event::TouchPhase::Moved => {
                 if let Some(&held) = self.buttonHeld.get(&id) {
                     self.pointers.moved(id, position);
-                    let hit = self.hit(position);
+                    let hit = self.hit(position, flying);
                     if hit != Some(held) {
                         if let Some(next) = hit {
                             self.buttonHeld.insert(id, next);
@@ -217,9 +223,9 @@ mod runtime_tests {
         let mut runtime = TouchRuntime::new();
         let layout = bedrock_geometry(600, 270);
         let center = jump_center();
-        assert!(runtime.handle_touch_widget(winit::event::TouchPhase::Started, 0, center, (600, 270), 0));
+        assert!(runtime.handle_touch_widget(winit::event::TouchPhase::Started, 0, center, (600, 270), 0, false));
         assert!(runtime.keys.jump);
-        runtime.handle_touch_widget(winit::event::TouchPhase::Ended, 0, center, (600, 270), 1);
+        runtime.handle_touch_widget(winit::event::TouchPhase::Ended, 0, center, (600, 270), 1, false);
         assert!(!runtime.keys.jump);
     }
 
@@ -227,6 +233,6 @@ mod runtime_tests {
     fn started_outside_widgets_falls_through() {
         let mut runtime = TouchRuntime::new();
         // Top-left corner is empty (no widget there).
-        assert!(!runtime.handle_touch_widget(winit::event::TouchPhase::Started, 0, (5.0, 5.0), (600, 270), 0));
+        assert!(!runtime.handle_touch_widget(winit::event::TouchPhase::Started, 0, (5.0, 5.0), (600, 270), 0, false));
     }
 }

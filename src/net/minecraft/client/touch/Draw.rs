@@ -17,7 +17,9 @@ pub fn button_rects(width: i32, height: i32) -> ((i32, i32, i32, i32), Vec<(i32,
     let layout = bedrock_geometry(width, height);
     let size = layout.dpad.size();
     let dpad = (layout.dpad.origin.0, layout.dpad.origin.1, layout.dpad.origin.0 + size, layout.dpad.origin.1 + size);
-    let buttons = [layout.jump, layout.sneak, layout.chat, layout.pause, layout.backpack, layout.ascend, layout.descend]
+    // Sneak lives in the DPad's center cell, so it is part of the pad and
+    // not listed among the outer buttons.
+    let buttons = [layout.jump, layout.chat, layout.pause, layout.backpack, layout.ascend, layout.descend]
         .iter().map(|widget| rect_of(widget)).collect();
     (dpad, buttons)
 }
@@ -58,7 +60,9 @@ pub fn draw_dpad(drawList: &mut GuiDrawList, dpad: DPadLayout, direction: Option
     let mut index = 0;
     for row in 0..3 {
         for col in 0..3 {
-            if (row, col) == (1, 1) { index += 1; continue; } // center unused
+            // The center cell is the sneak button (drawn separately); it must
+            // not advance the sprite index, or every later cell shifts by one.
+            if (row, col) == (1, 1) { continue; }
             let x = ox + col * (cell + gap);
             let y = oy + row * (cell + gap);
             let active = direction == cell_direction(index);

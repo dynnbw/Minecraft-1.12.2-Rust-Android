@@ -90,6 +90,16 @@ impl DPadLayout {
         self.cell * 3 + self.gap * 2
     }
 
+    /// Center cell rect (the sneak button in the Bedrock layout).
+    pub fn extra_button_rect(&self) -> (i32, i32, i32, i32) {
+        (
+            self.origin.0 + self.cell + self.gap,
+            self.origin.1 + self.cell + self.gap,
+            self.cell,
+            self.cell,
+        )
+    }
+
     /// Which cell contains `position`: row0 = forward row, row2 = backward.
     pub fn direction_at(&self, position: (f64, f64)) -> Option<DpadDirection> {
         let p = (position.0 - self.origin.0 as f64, position.1 - self.origin.1 as f64);
@@ -176,11 +186,11 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
     };
     // Jump: large button bottom-right, RIGHT_BOTTOM (42, 68).
     let jumpRect = (width - 42 - 56, height - 68 - 56, 56, 56);
-    // Sneak: left of jump, bottom-aligned.
-    let sneakRect = (jumpRect.0 - 8 - 40, jumpRect.1 + 56 - 40, 40, 40);
-    // Ascend/descend stack above the jump (shown while flying).
+    // Sneak: the DPad's center cell (below forward, left of right).
+    let sneakRect = dpad.extra_button_rect();
+    // Ascend above the jump, descend below it (both shown while flying).
     let ascend = (jumpRect.0 + 8, jumpRect.1 - 8 - 40, 40, 40);
-    let descend = (jumpRect.0 + 8, ascend.1 - 8 - 40, 40, 40);
+    let descend = (jumpRect.0 + 8, jumpRect.1 + 56 + 8, 40, 40);
     // Chat and pause sit side by side at the top edge center (Bedrock:
     // both at the top of the screen, chat left of pause).
     let topY = 12;
@@ -189,9 +199,9 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
     // Backpack: right of the 9th hotbar slot. Hotbar: 9 slots x 20px,
     // centered at the bottom, slot 9 spans [width/2+70, width/2+90].
     let backpack = (width / 2 + 90 + 8, height - 16 - 40, 40, 40);
-    // Backpack-close: top-right inside the inventory GUI (176 wide,
-    // centered), 20x20.
-    let backpackClose = (width / 2 + 88 - 24, 44, 20, 20);
+    // Backpack-close: to the right of the inventory GUI (176 wide,
+    // centered), clear of the GUI's own controls, 20x20.
+    let backpackClose = (width / 2 + 192, 44, 20, 20);
     BedrockLayout {
         dpad,
         jump: TouchWidget::Jump { rect: jumpRect },
