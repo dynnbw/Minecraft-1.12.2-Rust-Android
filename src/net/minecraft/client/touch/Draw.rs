@@ -57,17 +57,20 @@ pub fn draw_dpad(drawList: &mut GuiDrawList, dpad: DPadLayout, direction: Option
     let cell = dpad.cell;
     let gap = dpad.gap;
     let (ox, oy) = dpad.origin;
+    // Column/row offsets: diagonal cells are 18/22 of the main cells.
+    let offsets = [0, dpad.diagonal + gap, dpad.diagonal + gap + cell];
     let mut index = 0;
     for row in 0..3 {
         for col in 0..3 {
             // The center cell is the sneak button (drawn separately); it must
             // not advance the sprite index, or every later cell shifts by one.
             if (row, col) == (1, 1) { continue; }
-            let x = ox + col * (cell + gap);
-            let y = oy + row * (cell + gap);
+            let x = ox + offsets[col];
+            let y = oy + offsets[row];
+            let size = if col == 1 || row == 1 { cell } else { dpad.diagonal };
             let active = direction == cell_direction(index);
             let sprite = cell_sprite(index, active);
-            draw_sprite(drawList, x, y, cell, cell, sprite);
+            draw_sprite(drawList, x, y, size, size, sprite);
             index += 1;
         }
     }

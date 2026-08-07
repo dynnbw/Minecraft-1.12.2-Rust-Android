@@ -5927,13 +5927,38 @@ impl MinecraftApplication {
             .mainMenu
             .as_ref()
             .is_some_and(MainMenuRuntime::isModalWorldGuiOpen);
+        if matches!(phase, TouchPhase::Started) {
+            // Backpack-close fires while the inventory GUI is open (it is
+            // drawn inside that GUI), independent of the modal-world guard
+            // below which gates the world action buttons.
+            let backpackCloseHit = self
+                .mainMenu
+                .as_ref()
+                .is_some_and(MainMenuRuntime::isInventoryOpen)
+                && self.mainMenu.as_mut().is_some_and(|mainMenu| {
+                    let runtime = mainMenu.touchRuntime.get_or_insert_with(TouchRuntime::new);
+                    hit_test(&runtime.layout().backpackClose, position)
+                });
+            if backpackCloseHit {
+                let result = self.mainMenu.as_mut().map(MainMenuRuntime::closeInventory);
+                match result {
+                    Some(Ok(true)) => self.setWorldMouseGrabbed(true),
+                    Some(Err(message)) => log::error!("failed closing inventory: {message}"),
+                    _ => {}
+                }
+                if let Some(runtime) = self.mainMenu.as_mut().and_then(|m| m.touchRuntime.as_mut()) {
+                    runtime.reset();
+                }
+                return true;
+            }
+        }
         if matches!(phase, TouchPhase::Started) && !modalOpen {
             let oneShot = self.mainMenu.as_mut().map(|mainMenu| {
                 let runtime = mainMenu.touchRuntime.get_or_insert_with(TouchRuntime::new);
                 let layout = runtime.layout();
-                (layout.chat, layout.pause, layout.backpack, layout.backpackClose)
+                (layout.chat, layout.pause, layout.backpack)
             });
-            let consumed = if let Some((chat, pause, backpack, backpackClose)) = oneShot {
+            let consumed = if let Some((chat, pause, backpack)) = oneShot {
                 if hit_test(&chat, position) {
                     // Same as the in-world T key: open the chat window and
                     // drop the gameplay cursor grab so the chat owns focus.
@@ -5992,17 +6017,6 @@ impl MinecraftApplication {
                         }
                     } else if self.mainMenu.as_mut().is_some_and(MainMenuRuntime::openInventory) {
                         self.setWorldMouseGrabbed(false);
-                    }
-                    true
-                } else if self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen)
-                    && hit_test(&backpackClose, position)
-                {
-                    // Same as ESC while a container is open.
-                    let result = self.mainMenu.as_mut().map(MainMenuRuntime::closeInventory);
-                    match result {
-                        Some(Ok(true)) => self.setWorldMouseGrabbed(true),
-                        Some(Err(message)) => log::error!("failed closing inventory: {message}"),
-                        _ => {}
                     }
                     true
                 } else {

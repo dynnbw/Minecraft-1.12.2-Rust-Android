@@ -81,38 +81,43 @@ pub enum DpadDirection {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DPadLayout {
     pub origin: (i32, i32),
+    /// Main-direction cell size (the 22px sprite scaled up).
     pub cell: i32,
+    /// Diagonal cell size (18/22 of the main cells, matching the sprites).
+    pub diagonal: i32,
     pub gap: i32,
 }
 
 impl DPadLayout {
     pub fn size(&self) -> i32 {
-        self.cell * 3 + self.gap * 2
+        self.diagonal + self.cell + self.diagonal + self.gap * 2
     }
 
     /// Center cell rect (the sneak button in the Bedrock layout).
     pub fn extra_button_rect(&self) -> (i32, i32, i32, i32) {
         (
-            self.origin.0 + self.cell + self.gap,
-            self.origin.1 + self.cell + self.gap,
+            self.origin.0 + self.diagonal + self.gap,
+            self.origin.1 + self.diagonal + self.gap,
             self.cell,
             self.cell,
         )
     }
 
     /// Which cell contains `position`: row0 = forward row, row2 = backward.
+    /// The diagonal cells are smaller than the main-direction cells.
     pub fn direction_at(&self, position: (f64, f64)) -> Option<DpadDirection> {
         let p = (position.0 - self.origin.0 as f64, position.1 - self.origin.1 as f64);
         let b = self.cell as f64;
+        let d = self.diagonal as f64;
         let g = self.gap as f64;
         let in_h = |x0: f64, w: f64| p.0 >= x0 && p.0 < x0 + w;
         let in_v = |y0: f64, h: f64| p.1 >= y0 && p.1 < y0 + h;
-        let col0 = (0.0, b + g);
-        let col1 = (b + g, b);
-        let col2 = (2.0 * b + g, b + g);
-        let row0 = (0.0, b + g);
-        let row1 = (b + g, b);
-        let row2 = (2.0 * b + g, b + g);
+        let col0 = (0.0, d + g);
+        let col1 = (d + g, b);
+        let col2 = (d + g + b, d + g);
+        let row0 = (0.0, d + g);
+        let row1 = (d + g, b);
+        let row2 = (d + g + b, d + g);
         let hit = |c: (f64, f64), r: (f64, f64)| in_h(c.0, c.1) && in_v(r.0, r.1);
         if hit(col1, row0) {
             Some(DpadDirection::Forward)
@@ -176,12 +181,15 @@ pub struct BedrockLayout {
 }
 
 pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
-    // DPad: 3x3 grid, 44px cells, 8px gaps, LEFT_BOTTOM (12, 16).
+    // DPad: 3x3 grid, 44px main cells, 36px diagonals (18/22 of the main
+    // cells, matching the sprite sizes), 8px gaps, LEFT_BOTTOM (12, 16).
     let cell = 44;
+    let diagonal = 36;
     let gap = 8;
     let dpad = DPadLayout {
-        origin: (12, height - 16 - (cell * 3 + gap * 2)),
+        origin: (12, height - 16 - (diagonal + cell + diagonal + gap * 2)),
         cell,
+        diagonal,
         gap,
     };
     // Jump: large button bottom-right, RIGHT_BOTTOM (42, 68).
@@ -192,16 +200,18 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
     let ascend = (jumpRect.0 + 8, jumpRect.1 - 8 - 40, 40, 40);
     let descend = (jumpRect.0 + 8, jumpRect.1 + 56 + 8, 40, 40);
     // Chat and pause sit side by side at the top edge center (Bedrock:
-    // both at the top of the screen, chat left of pause).
+    // both at the top of the screen, chat left of pause), ~22px like the
+    // sprites.
     let topY = 12;
-    let chat = (width / 2 - 48, topY, 40, 40);
-    let pause = (width / 2 + 8, topY, 40, 40);
-    // Backpack: right of the 9th hotbar slot. Hotbar: 9 slots x 20px,
-    // centered at the bottom, slot 9 spans [width/2+70, width/2+90].
-    let backpack = (width / 2 + 90 + 8, height - 16 - 40, 40, 40);
-    // Backpack-close: to the right of the inventory GUI (176 wide,
-    // centered), clear of the GUI's own controls, 20x20.
-    let backpackClose = (width / 2 + 192, 44, 20, 20);
+    let chat = (width / 2 - 39, topY, 22, 22);
+    let pause = (width / 2 + 17, topY, 22, 22);
+    // Backpack: same size as one hotbar slot (20x20), immediately right of
+    // the 9th slot. Hotbar: 9 slots x 20px centered at the bottom, slot 9
+    // spans [width/2+70, width/2+90].
+    let backpack = (width / 2 + 90, height - 16 - 20, 20, 20);
+    // Backpack-close: right of the inventory GUI's top-right corner
+    // (moved 24px right of its original in-GUI position), 20x20.
+    let backpackClose = (width / 2 + 88, 44, 20, 20);
     BedrockLayout {
         dpad,
         jump: TouchWidget::Jump { rect: jumpRect },
