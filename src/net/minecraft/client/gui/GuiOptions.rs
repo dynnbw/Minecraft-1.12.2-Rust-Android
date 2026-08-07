@@ -12,7 +12,8 @@ use crate::vulkan::GuiDrawList::GuiDrawList;
 const FOV_ID: i32 = 0;
 
 /// Rect of the touch-settings sprite button (Android): right of the
-/// controls row, 40x40. Kept out of buttonList and handled by this screen.
+/// controls row, drawn at the sprite's native 18x18 size. Kept out of
+/// buttonList and handled by this screen.
 #[cfg(target_os = "android")]
 fn touch_settings_button_rect(width: i32, height: i32) -> (i32, i32) {
     (width / 2 + 163, height / 6 + 66)
@@ -172,8 +173,8 @@ impl GuiOptions {
             use crate::net::minecraft::client::touch::Draw::draw_sprite;
             use crate::net::minecraft::client::touch::Widgets::{pick, SETTINGS, SETTINGS_ACTIVE};
             let (bx, by) = touch_settings_button_rect(self.GuiScreen.width, self.GuiScreen.height);
-            let mouseOver = mouseX >= bx && mouseX < bx + 40 && mouseY >= by && mouseY < by + 40;
-            draw_sprite(drawList, bx, by, 40, 40, pick(mouseOver, SETTINGS, SETTINGS_ACTIVE));
+            let mouseOver = mouseX >= bx && mouseX < bx + 18 && mouseY >= by && mouseY < by + 18;
+            draw_sprite(drawList, bx, by, 18, 18, pick(mouseOver, SETTINGS, SETTINGS_ACTIVE));
         }
     }
 
@@ -190,7 +191,7 @@ impl GuiOptions {
         #[cfg(target_os = "android")]
         {
             let (bx, by) = touch_settings_button_rect(self.GuiScreen.width, self.GuiScreen.height);
-            if mouseX >= bx && mouseX < bx + 40 && mouseY >= by && mouseY < by + 40 {
+            if mouseX >= bx && mouseX < bx + 18 && mouseY >= by && mouseY < by + 18 {
                 return Some(GuiOptionsInteraction {
                     action: GuiOptionsAction::OpenTouchSettings,
                     sound: Some(GuiSoundCommand {

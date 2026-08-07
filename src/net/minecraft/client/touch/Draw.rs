@@ -31,11 +31,21 @@ pub fn rect_of(widget: &TouchWidget) -> (i32, i32, i32, i32) {
     }
 }
 
-/// Stretches a sprite onto the target rect.
-pub fn draw_sprite(drawList: &mut GuiDrawList, x: i32, y: i32, w: i32, h: i32, (u, v, _sw, _sh): Sprite) {
-    drawList.draw_modal_rect_with_custom_sized_texture(
-        touch_texture(), x as f32, y as f32, u as f32, v as f32,
-        w as f32, h as f32, ATLAS, ATLAS,
+/// Stretches a sprite onto the target rect. The source region is the
+/// sprite's own (sw x sh) pixels, stretched to the (w x h) target — unlike
+/// `draw_modal_rect_with_custom_sized_texture`, which samples an area equal
+/// to the draw size and would cut neighboring sprites out of the atlas.
+pub fn draw_sprite(drawList: &mut GuiDrawList, x: i32, y: i32, w: i32, h: i32, (u, v, sw, sh): Sprite) {
+    let inv_w = 1.0 / ATLAS;
+    let inv_h = 1.0 / ATLAS;
+    drawList.push_textured_quad(
+        touch_texture(),
+        [
+            (x as f32, (y + h) as f32, u as f32 * inv_w, (v + sh) as f32 * inv_h, 0xFFFF_FFFF),
+            ((x + w) as f32, (y + h) as f32, (u + sw) as f32 * inv_w, (v + sh) as f32 * inv_h, 0xFFFF_FFFF),
+            ((x + w) as f32, y as f32, (u + sw) as f32 * inv_w, v as f32 * inv_h, 0xFFFF_FFFF),
+            (x as f32, y as f32, u as f32 * inv_w, v as f32 * inv_h, 0xFFFF_FFFF),
+        ],
     );
 }
 

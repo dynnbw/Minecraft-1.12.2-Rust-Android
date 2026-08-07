@@ -4056,6 +4056,17 @@ impl VulkanWorldRenderer {
                 tintIndex: None,
             }],
         };
+        // Bedrock-style touch layer: the touch.png sprite sheet must be part
+        // of the world atlas so the touch HUD quads resolve to its rectangle
+        // (append_font_draw_list falls back to the widgets rectangle for
+        // locations missing from the atlas).
+        let touchKey = MaterialKey {
+            blockId: -39,
+            layers: vec![MaterialLayerKey {
+                texture: ResourceLocation::new("minecraft", "textures/gui/touch.png"),
+                tintIndex: None,
+            }],
+        };
         let optionsBackgroundKey = MaterialKey {
             blockId: -33,
             layers: vec![MaterialLayerKey {
@@ -4281,6 +4292,7 @@ impl VulkanWorldRenderer {
         self.registerMaterialKey(widgetsKey.clone(), &mut materialIndices, &mut materials);
         self.registerMaterialKey(iconsKey.clone(), &mut materialIndices, &mut materials);
         self.registerMaterialKey(barsKey.clone(), &mut materialIndices, &mut materials);
+        self.registerMaterialKey(touchKey.clone(), &mut materialIndices, &mut materials);
         self.registerMaterialKey(optionsBackgroundKey.clone(), &mut materialIndices, &mut materials);
         self.registerMaterialKey(minecraftTitleKey.clone(), &mut materialIndices, &mut materials);
         self.registerMaterialKey(editionTitleKey.clone(), &mut materialIndices, &mut materials);
