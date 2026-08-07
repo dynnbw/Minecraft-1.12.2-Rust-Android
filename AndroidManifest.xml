@@ -3,7 +3,7 @@
     package="net.mc112rust.client"
     android:versionCode="1"
     android:versionName="0.1">
-    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="34"/>
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="Minecraft 1.12.2 Rust"
