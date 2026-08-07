@@ -9,6 +9,8 @@ pub struct KeyState {
     pub back: bool,
     pub left: bool,
     pub right: bool,
+    /// Double-tap sprint (two forward presses within a few ticks).
+    pub sprint: bool,
     pub jump: bool,
     pub sneak: bool,
     /// One-shot actions, consumed each client tick.

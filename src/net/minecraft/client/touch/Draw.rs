@@ -57,8 +57,10 @@ pub fn draw_dpad(drawList: &mut GuiDrawList, dpad: DPadLayout, direction: Option
     let cell = dpad.cell;
     let gap = dpad.gap;
     let (ox, oy) = dpad.origin;
-    // Column/row offsets: diagonal cells are 18/22 of the main cells.
-    let offsets = [0, dpad.diagonal + gap, dpad.diagonal + gap + cell];
+    // Column/row offsets: diagonal cells are 18/22 of the main cells; the
+    // second diagonal column/row starts after main + gap so both gaps are
+    // symmetric.
+    let offsets = [0, dpad.diagonal + gap, dpad.diagonal + gap + cell + gap];
     let mut index = 0;
     for row in 0..3 {
         for col in 0..3 {

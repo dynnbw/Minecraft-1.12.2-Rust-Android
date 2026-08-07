@@ -114,10 +114,10 @@ impl DPadLayout {
         let in_v = |y0: f64, h: f64| p.1 >= y0 && p.1 < y0 + h;
         let col0 = (0.0, d + g);
         let col1 = (d + g, b);
-        let col2 = (d + g + b, d + g);
+        let col2 = (d + g + b + g, d + g);
         let row0 = (0.0, d + g);
         let row1 = (d + g, b);
-        let row2 = (d + g + b, d + g);
+        let row2 = (d + g + b + g, d + g);
         let hit = |c: (f64, f64), r: (f64, f64)| in_h(c.0, c.1) && in_v(r.0, r.1);
         if hit(col1, row0) {
             Some(DpadDirection::Forward)
@@ -200,18 +200,18 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
     let ascend = (jumpRect.0 + 8, jumpRect.1 - 8 - 40, 40, 40);
     let descend = (jumpRect.0 + 8, jumpRect.1 + 56 + 8, 40, 40);
     // Chat and pause sit side by side at the top edge center (Bedrock:
-    // both at the top of the screen, chat left of pause), ~22px like the
-    // sprites.
+    // both at the top of the screen, chat left of pause, adjacent), ~22px
+    // like the sprites.
     let topY = 12;
-    let chat = (width / 2 - 39, topY, 22, 22);
-    let pause = (width / 2 + 17, topY, 22, 22);
+    let chat = (width / 2 - 24, topY, 22, 22);
+    let pause = (width / 2 + 2, topY, 22, 22);
     // Backpack: same size as one hotbar slot (20x20), immediately right of
-    // the 9th slot. Hotbar: 9 slots x 20px centered at the bottom, slot 9
-    // spans [width/2+70, width/2+90].
-    let backpack = (width / 2 + 90, height - 16 - 20, 20, 20);
+    // the 9th slot and flush with the screen bottom. Hotbar: 9 slots x 20px
+    // centered at the bottom, slot 9 spans [width/2+70, width/2+90].
+    let backpack = (width / 2 + 90, height - 20, 20, 20);
     // Backpack-close: right of the inventory GUI's top-right corner
-    // (moved 24px right of its original in-GUI position), 20x20.
-    let backpackClose = (width / 2 + 88, 44, 20, 20);
+    // (moved 48px right of its original in-GUI position), 20x20.
+    let backpackClose = (width / 2 + 112, 44, 20, 20);
     BedrockLayout {
         dpad,
         jump: TouchWidget::Jump { rect: jumpRect },

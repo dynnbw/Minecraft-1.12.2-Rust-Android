@@ -4596,6 +4596,7 @@ impl MainMenuRuntime {
                             movementKeys.right |= runtime.keys.right;
                             movementKeys.jump |= runtime.keys.jump;
                             movementKeys.sneak |= runtime.keys.sneak || runtime.keys.sneakLocked;
+                            movementKeys.sprint |= runtime.keys.sprint;
                         }
                     }
                     let mut packets = shared.tickLocalPlayer(movementKeys);

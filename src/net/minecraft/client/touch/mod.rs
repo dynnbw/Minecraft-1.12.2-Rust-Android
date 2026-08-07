@@ -23,6 +23,9 @@ pub struct TouchRuntime {
     buttonHeld: HashMap<u64, HeldKind>,
     /// Sneak long-press lock start tick.
     sneakLockStart: Option<i32>,
+    /// Last tick a forward direction (forward/left-forward/right-forward)
+    /// was pressed; used for the double-tap sprint.
+    lastForwardPressTick: Option<i32>,
     lastSize: (i32, i32),
     layout: Widgets::BedrockLayout,
 }
@@ -37,6 +40,20 @@ enum HeldKind {
     Descend,
 }
 
+/// Double-tap sprint window in client ticks (matches the vanilla fly-toggle
+/// window).
+const DOUBLE_TAP_TICKS: i32 = 7;
+
+#[cfg(any(target_os = "android", test))]
+fn is_forward(kind: HeldKind) -> bool {
+    matches!(
+        kind,
+        HeldKind::Dpad(Widgets::DpadDirection::Forward)
+            | HeldKind::Dpad(Widgets::DpadDirection::LeftForward)
+            | HeldKind::Dpad(Widgets::DpadDirection::RightForward)
+    )
+}
+
 #[cfg(any(target_os = "android", test))]
 impl Default for TouchRuntime {
     fn default() -> Self {
@@ -45,6 +62,7 @@ impl Default for TouchRuntime {
             pointers: PointerState::PointerState::new(),
             buttonHeld: HashMap::new(),
             sneakLockStart: None,
+            lastForwardPressTick: None,
             lastSize: (0, 0),
             layout: Widgets::bedrock_geometry(600, 270),
         }
@@ -93,6 +111,18 @@ impl TouchRuntime {
         match phase {
             winit::event::TouchPhase::Started => {
                 if let Some(kind) = self.hit(position, flying) {
+                    // Double-tap sprint: a forward direction pressed twice
+                    // within DOUBLE_TAP_TICKS arms the sprint key (vanilla
+                    // double-tap-forward semantics).
+                    if is_forward(kind) {
+                        if self
+                            .lastForwardPressTick
+                            .is_some_and(|last| tick - last <= DOUBLE_TAP_TICKS)
+                        {
+                            self.keys.sprint = true;
+                        }
+                        self.lastForwardPressTick = Some(tick);
+                    }
                     self.buttonHeld.insert(id, kind);
                     self.pointers.started(id, position);
                     self.apply_one(kind);
@@ -184,6 +214,11 @@ impl TouchRuntime {
                 self.keys.sneak = true;
             }
         }
+        // Sprint only persists while a forward direction is held (double-tap
+        // W semantics: releasing forward stops sprinting).
+        if !self.keys.forward {
+            self.keys.sprint = false;
+        }
     }
 
     pub fn layout(&self) -> &Widgets::BedrockLayout {
@@ -204,6 +239,7 @@ impl TouchRuntime {
         self.keys = KeyState::KeyState::default();
         self.buttonHeld.clear();
         self.sneakLockStart = None;
+        self.lastForwardPressTick = None;
     }
 }
 
