@@ -5743,23 +5743,186 @@ impl MinecraftApplication {
     }
 
     /// Bedrock-style touch layer entry. Returns true when the touch was
-    /// consumed by a touch widget; false falls through to the legacy bridge.
-    /// Only reached when touchEnabled() (the call site gates on it), so the
-    /// layer stays None — and this path is dead — while the option is off.
-    /// Widget hit-testing lands in a later task; for now each call only arms
-    /// the runtime so the per-tick movement synthesis in updateScreen has a
-    /// state to read, and the touch still falls through unchanged.
+    /// consumed by a touch widget; false falls through to the legacy bridge
+    /// (tap place/interact, long-press destroy, look swipe). Only reached
+    /// when touchEnabled() (the call site gates on it), so the layer stays
+    /// None — and this path is dead — while the option is off.
     #[cfg(target_os = "android")]
     fn touchConsume(
         &mut self,
-        _phase: TouchPhase,
-        _location: PhysicalPosition<f64>,
-        _eventLoop: &ActiveEventLoop,
-        _fatalError: &mut Option<anyhow::Error>,
+        phase: TouchPhase,
+        id: u64,
+        location: PhysicalPosition<f64>,
+        eventLoop: &ActiveEventLoop,
+        fatalError: &mut Option<anyhow::Error>,
     ) -> bool {
-        let Some(mainMenu) = self.mainMenu.as_mut() else { return false; };
-        let _ = mainMenu.touchRuntime.get_or_insert_with(crate::net::minecraft::client::touch::TouchRuntime::new);
-        false
+        use crate::net::minecraft::client::touch::TouchRuntime;
+        use crate::net::minecraft::client::touch::Widgets::hit_test;
+        // Physical -> scaled coordinates (same ratio as the legacy bridge).
+        let (screenWidth, screenHeight) = crate::launcher::android::screen_size();
+        let (screenWidth, screenHeight) = (screenWidth as f64, screenHeight as f64);
+        let Some((scaledWidth, scaledHeight)) = self.mainMenu.as_ref().map(|mainMenu| {
+            (
+                mainMenu.scaledResolution.scaled_width() as f64,
+                mainMenu.scaledResolution.scaled_height() as f64,
+            )
+        }) else {
+            return false;
+        };
+        if screenWidth <= 0.0 || screenHeight <= 0.0 || scaledWidth <= 0.0 || scaledHeight <= 0.0 {
+            return false;
+        }
+        let position = (
+            location.x * (scaledWidth / screenWidth),
+            location.y * (scaledHeight / screenHeight),
+        );
+        let size = (scaledWidth as i32, scaledHeight as i32);
+        // Same tick source as the per-tick movement synthesis in updateScreen.
+        let tick = self
+            .mainMenu
+            .as_ref()
+            .and_then(|mainMenu| match &mainMenu.currentScreen {
+                ActiveGuiScreen::World { connection, .. } => Some(
+                    connection.getSharedPlayState().withRead(|state| {
+                        state.thePlayer.as_ref().map_or(0, |player| player.entity.ticksExisted)
+                    }),
+                ),
+                _ => None,
+            })
+            .unwrap_or(0);
+        // One-shot action buttons fire on a Started hit. The widget rects are
+        // copied out of the runtime so its borrow ends before the
+        // GUI-opening calls below; every action opens/closes a GUI screen, so
+        // any held widget keys are released afterwards.
+        if matches!(phase, TouchPhase::Started) {
+            let oneShot = self.mainMenu.as_mut().map(|mainMenu| {
+                let runtime = mainMenu.touchRuntime.get_or_insert_with(TouchRuntime::new);
+                let layout = runtime.layout();
+                (layout.chat, layout.pause, layout.backpack, layout.backpackClose)
+            });
+            let consumed = if let Some((chat, pause, backpack, backpackClose)) = oneShot {
+                if hit_test(&chat, position) {
+                    // Same as the in-world T key: open the chat window and
+                    // drop the gameplay cursor grab so the chat owns focus.
+                    if self.mainMenu.as_mut().is_some_and(|mainMenu| mainMenu.openChat("")) {
+                        self.setWorldMouseGrabbed(false);
+                    }
+                    true
+                } else if hit_test(&pause, position) {
+                    // Mirrors the Escape key: close an open inventory, open
+                    // the in-game menu in-world, or back out of the current
+                    // screen otherwise.
+                    if self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen) {
+                        let result = self.mainMenu.as_mut().map(MainMenuRuntime::closeInventory);
+                        match result {
+                            Some(Ok(true)) => self.setWorldMouseGrabbed(true),
+                            Some(Err(message)) => log::error!("failed closing inventory: {message}"),
+                            _ => {}
+                        }
+                    } else if self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isWorld) {
+                        match self.applyGuiAction(RuntimeGuiAction::OpenIngameMenu) {
+                            Ok(true) => {
+                                eventLoop.exit();
+                                return true;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                *fatalError = Some(error.context("failed opening in-game menu from touch"));
+                            }
+                        }
+                    } else if let Some(action) = self
+                        .mainMenu
+                        .as_mut()
+                        .and_then(MainMenuRuntime::escapeAction)
+                    {
+                        match self.applyGuiAction(action) {
+                            Ok(true) => {
+                                eventLoop.exit();
+                                return true;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                *fatalError = Some(error.context("failed applying touch Escape action"));
+                            }
+                        }
+                    }
+                    true
+                } else if hit_test(&backpack, position) {
+                    // Same as the E key: toggle the inventory through the
+                    // existing open/close paths.
+                    if self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen) {
+                        let result = self.mainMenu.as_mut().map(MainMenuRuntime::closeInventory);
+                        match result {
+                            Some(Ok(true)) => self.setWorldMouseGrabbed(true),
+                            Some(Err(message)) => log::error!("failed closing inventory: {message}"),
+                            _ => {}
+                        }
+                    } else if self.mainMenu.as_mut().is_some_and(MainMenuRuntime::openInventory) {
+                        self.setWorldMouseGrabbed(false);
+                    }
+                    true
+                } else if self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen)
+                    && hit_test(&backpackClose, position)
+                {
+                    // Same as ESC while a container is open.
+                    let result = self.mainMenu.as_mut().map(MainMenuRuntime::closeInventory);
+                    match result {
+                        Some(Ok(true)) => self.setWorldMouseGrabbed(true),
+                        Some(Err(message)) => log::error!("failed closing inventory: {message}"),
+                        _ => {}
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if consumed {
+                if let Some(runtime) = self.mainMenu.as_mut().and_then(|mainMenu| {
+                    mainMenu.touchRuntime.as_mut()
+                }) {
+                    runtime.reset();
+                }
+                self.requestRedraw();
+                return true;
+            }
+        }
+        // Held widgets (dpad/jump/sneak/ascend/descend) route through the runtime.
+        if self.mainMenu.as_mut().is_some_and(|mainMenu| {
+            mainMenu.touchRuntime.as_mut().is_some_and(|runtime| {
+                runtime.handle_touch_widget(phase, id, position, size, tick)
+            })
+        }) {
+            return true;
+        }
+        // Container GUI open and the touch hit no widget: position the cursor
+        // at the touch point and click the slot underneath through the
+        // existing inventory-click path (left click only).
+        if matches!(phase, TouchPhase::Started)
+            && self.mainMenu.as_ref().is_some_and(MainMenuRuntime::isInventoryOpen)
+        {
+            self.handleCursorMove(location, eventLoop, fatalError);
+            let clicked = match (self.renderer.as_ref(), self.mainMenu.as_mut()) {
+                (Some(renderer), Some(mainMenu)) => {
+                    let extent = renderer.extent();
+                    mainMenu.inventoryMouseClicked(
+                        extent.width,
+                        extent.height,
+                        MouseButton::Left,
+                        self.keyboardModifiers,
+                    )
+                }
+                _ => Ok(false),
+            };
+            match clicked {
+                Ok(true) => self.requestRedraw(),
+                Ok(false) => {}
+                Err(message) => log::error!("failed sending inventory click: {message}"),
+            }
+            return true;
+        }
+        false // fall through to the legacy bridge (tap place / long-press / look swipe)
     }
 
     /// Maps a physical position to the hotbar slot touched (0-8), or None
@@ -6867,7 +7030,7 @@ impl ApplicationHandler for MinecraftApplication {
                     // against the touch widgets; a hit is consumed here, anything else falls
                     // through to the legacy bridge below (tap place/interact, long-press
                     // destroy, look swipe) unchanged.
-                    if self.touchEnabled() && self.touchConsume(touch.phase, touch.location, eventLoop, &mut fatalError) {
+                    if self.touchEnabled() && self.touchConsume(touch.phase, touch.id, touch.location, eventLoop, &mut fatalError) {
                         return;
                     }
                     match touch.phase {
