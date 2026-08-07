@@ -122,6 +122,31 @@ impl ResourceManager {
         Ok(())
     }
 
+    /// Reads the `{name}.mcmeta` metadata file from the root of every pack,
+    /// in pack order (MCP `IResourcePack#getPackMetadata`, e.g. name "pack"
+    /// reads `pack.mcmeta`). Packs without the file are skipped.
+    pub fn read_pack_metadatas(&self, name: &str) -> Vec<Vec<u8>> {
+        let mut sections = Vec::new();
+        for pack in &self.packs {
+            match &pack.pack {
+                ResourcePackSource::Directory(directory) => {
+                    let path = directory.assets_root().join(format!("{name}.mcmeta"));
+                    if path.is_file() {
+                        if let Ok(bytes) = fs::read(path) {
+                            sections.push(bytes);
+                        }
+                    }
+                }
+                ResourcePackSource::Zip(zip) => {
+                    if let Ok(bytes) = zip.read_name(&format!("{name}.mcmeta")) {
+                        sections.push(bytes);
+                    }
+                }
+            }
+        }
+        sections
+    }
+
     pub fn pack_count(&self) -> usize { self.packs.len() }
 
     pub fn pack_names(&self) -> Vec<&str> {
