@@ -273,7 +273,10 @@ mod tests {
         let resource = manager.get_resource(&ResourceLocation::new("minecraft", "test/value.txt")).unwrap();
         assert_eq!(resource.bytes, b"overlay");
         let all = manager.get_all_resources(&ResourceLocation::new("minecraft", "test/value.txt")).unwrap();
-        assert_eq!(all.iter().map(|resource| resource.bytes.as_slice()).collect::<Vec<_>>(), vec![b"base", b"overlay"]);
+        assert_eq!(
+            all.iter().map(|resource| resource.bytes.as_slice()).collect::<Vec<_>>(),
+            vec![b"base".as_slice(), b"overlay".as_slice()]
+        );
         let _ = fs::remove_dir_all(base);
         let _ = fs::remove_dir_all(overlay);
     }
