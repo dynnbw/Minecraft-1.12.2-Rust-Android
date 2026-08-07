@@ -5490,6 +5490,10 @@ struct MinecraftApplication {
     /// Button sent for the active touch (released on touch end).
     #[cfg(target_os = "android")]
     touchActiveButton: Option<MouseButton>,
+    /// Bedrock-style touch layer runtime (Android). None while disabled or
+    /// suspended; created lazily on the first enabled touch.
+    #[cfg(target_os = "android")]
+    touchRuntime: Option<crate::net::minecraft::client::touch::TouchRuntime>,
     keyboardModifiers: ModifiersState,
     worldMouseGrabbed: bool,
     windowFocused: bool,
@@ -5712,6 +5716,26 @@ impl MinecraftApplication {
         }
     }
 
+    #[cfg(target_os = "android")]
+    fn touchEnabled(&self) -> bool {
+        self.minecraft.as_ref().is_some_and(|m| m.gameSettings.touch.enabled)
+    }
+
+    /// Bedrock-style touch layer entry. Returns true when the touch was
+    /// consumed by a touch widget; false falls through to the legacy bridge.
+    /// Task 3-4 implement the hit-testing; until then every touch falls
+    /// through, so the current behavior is unchanged.
+    #[cfg(target_os = "android")]
+    fn touchConsume(
+        &mut self,
+        _phase: TouchPhase,
+        _location: PhysicalPosition<f64>,
+        _eventLoop: &ActiveEventLoop,
+        _fatalError: &mut Option<anyhow::Error>,
+    ) -> bool {
+        false
+    }
+
     /// Maps a physical position to the hotbar slot touched (0-8), or None
     /// when the position is outside the bottom hotbar strip.
     ///
@@ -5774,6 +5798,8 @@ impl MinecraftApplication {
             touchLongPressFired: false,
             #[cfg(target_os = "android")]
             touchActiveButton: None,
+            #[cfg(target_os = "android")]
+            touchRuntime: None,
             windowFocused: true,
             suspended: false,
             debugFps: 0,
@@ -6813,6 +6839,13 @@ impl ApplicationHandler for MinecraftApplication {
                     // touching the hotbar selects that slot, long-pressing it
                     // drops the held item (Q). GUIs get a plain left click.
                     let position = touch.location;
+                    // Bedrock-style touch layer (Android): when enabled, hit-test the touch
+                    // against the touch widgets; a hit is consumed here, anything else falls
+                    // through to the legacy bridge below (tap place/interact, long-press
+                    // destroy, look swipe) unchanged.
+                    if self.touchEnabled() && self.touchConsume(touch.phase, touch.location, eventLoop, &mut fatalError) {
+                        return;
+                    }
                     match touch.phase {
                         TouchPhase::Started => {
                             // Update the cursor position first: touches produce
@@ -7432,6 +7465,7 @@ impl ApplicationHandler for MinecraftApplication {
             self.touchPress = None;
             self.lastTouchPosition = None;
             self.touchActiveButton = None;
+            self.touchRuntime = None;
         }
     }
 

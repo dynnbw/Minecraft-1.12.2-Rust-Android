@@ -17,3 +17,5 @@ pub mod network;
 #[path = "particle/mod.rs"] pub mod particle;
 
 #[path = "util/mod.rs"] pub mod util;
+
+#[path = "touch/mod.rs"] pub mod touch;

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::launcher::OptionsFile::{OptionsFile, OptionsFileError};
 use crate::launcher::RenderBackend::RenderBackend;
 
+use crate::net::minecraft::client::touch::TouchConfig::TouchConfig;
 use crate::net::minecraft::entity::player::EntityPlayer::EnumChatVisibility;
 use crate::net::minecraft::entity::player::EnumPlayerModelParts::EnumPlayerModelParts;
 use crate::net::minecraft::util::EnumHandSide::EnumHandSide;
@@ -62,6 +63,9 @@ pub struct GameSettings {
     /// authoritative. This is deliberately not represented as a new gameplay
     /// state on EntityPlayerSP.
     pub forceSprint: bool,
+    /// Bedrock-style touch layer (Android). Off by default; the legacy
+    /// tap/long-press/look-swipe bridge stays active while disabled.
+    pub touch: TouchConfig,
     pub fovSetting: f32,
     pub gammaSetting: f32,
     pub guiScale: i32,
@@ -268,6 +272,9 @@ impl GameSettings {
         if let Some(fullscreenMode) = options.get("ofFullscreenMode") {
             settings.ofFullscreenMode = fullscreenMode.to_owned();
         }
+        settings.touch = TouchConfig::read_lines(
+            &options.entries().iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+        );
         Ok(settings)
     }
 
@@ -314,6 +321,7 @@ impl GameSettings {
         options.set("particles", self.particleSetting.to_string());
         options.set("guiScale", self.guiScale.to_string());
         options.set("lang", self.language.clone());
+        options.set("touchEnabled", self.touch.enabled.to_string());
         options.set("forceUnicodeFont", self.forceUnicodeFont.to_string());
         options.set("enableVsync", self.enableVsync.to_string());
         options.set("fullscreen", self.fullScreen.to_string());
@@ -487,6 +495,7 @@ impl Default for GameSettings {
             advancedItemTooltips: false,
             soundLevels: [1.0; 10],
             forceSprint: false,
+            touch: TouchConfig::default(),
             fovSetting: 70.0,
             gammaSetting: 0.0,
             guiScale: 0,
