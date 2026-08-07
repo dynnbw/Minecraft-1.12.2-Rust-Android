@@ -5794,7 +5794,15 @@ impl MinecraftApplication {
         // copied out of the runtime so its borrow ends before the
         // GUI-opening calls below; every action opens/closes a GUI screen, so
         // any held widget keys are released afterwards.
-        if matches!(phase, TouchPhase::Started) {
+        // The world action buttons only respond outside modal world GUIs
+        // (pause menu, options, chat, open inventory) — same as the vanilla
+        // keyboard bindings, which are inert while a screen is open. The
+        // inventory slot clicks below are handled separately.
+        let modalOpen = self
+            .mainMenu
+            .as_ref()
+            .is_some_and(MainMenuRuntime::isModalWorldGuiOpen);
+        if matches!(phase, TouchPhase::Started) && !modalOpen {
             let oneShot = self.mainMenu.as_mut().map(|mainMenu| {
                 let runtime = mainMenu.touchRuntime.get_or_insert_with(TouchRuntime::new);
                 let layout = runtime.layout();
