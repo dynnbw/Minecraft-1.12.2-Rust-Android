@@ -31,6 +31,10 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
             .with_max_level(log::LevelFilter::Debug)
             .with_tag("mc112"),
     );
+    // rodio's Android backend (cpal -> oboe/AAudio) resolves the JavaVM and
+    // activity through ndk-context. android-activity already initialized it
+    // before invoking android_main; calling initialize_android_context again
+    // would panic on its once-only assert.
     launcher::android::enter_fullscreen();
     let game_dir = launcher::android::game_dir();
     if let Err(error) = launcher::AssetBootstrap::extract_assets(&app.asset_manager(), &game_dir) {

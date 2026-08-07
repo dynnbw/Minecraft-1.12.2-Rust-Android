@@ -11,7 +11,9 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const MARKER: &str = ".assets-extracted-v1";
+// v2: audio was restored on Android, so previously-installed apps must
+// re-extract to pick up the sounds that v1 shipped without.
+const MARKER: &str = ".assets-extracted-v2";
 
 /// Pure: decide whether extraction is needed for the given marker file.
 pub fn needs_extraction(marker: &Path) -> bool {

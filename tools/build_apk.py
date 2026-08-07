@@ -17,9 +17,6 @@ STAGE = DIST / "stage"
 ASSETS_STAGE = STAGE / "mcassets"
 LIST_FILE = STAGE / "mcassets.list"
 
-# Android builds have no audio backend; ship the visual assets only.
-EXCLUDE_DIRS = {"minecraft/sounds"}
-EXCLUDE_FILES = {"minecraft/sounds.json"}
 
 
 def find_sdk() -> pathlib.Path:
@@ -41,8 +38,6 @@ def stage_assets(src: pathlib.Path) -> None:
         rel = path.relative_to(src).as_posix()
         # aapt2 drops dotfiles from APK assets; keep the manifest consistent.
         if any(part.startswith(".") for part in rel.split("/")):
-            continue
-        if rel in EXCLUDE_FILES or any(rel.startswith(d + "/") for d in EXCLUDE_DIRS):
             continue
         target = ASSETS_STAGE / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -70,7 +65,8 @@ def run(cmd):
 
 
 def add_native_libs(apk: pathlib.Path) -> None:
-    """Append the cdylib at lib/<abi>/ for NativeActivity to load."""
+    """Append the cdylib (and the C++ runtime it needs) at lib/<abi>/ for
+    NativeActivity to load."""
     import zipfile
     so_src = ROOT / "target" / "android" / "arm64-v8a" / "libminecraft_1_12_2_rust_vulkan.so"
     if not so_src.is_file():
@@ -78,6 +74,33 @@ def add_native_libs(apk: pathlib.Path) -> None:
     with zipfile.ZipFile(apk, "a", zipfile.ZIP_DEFLATED) as archive:
         archive.write(so_src, "lib/arm64-v8a/libminecraft_1_12_2_rust_vulkan.so")
     print(f"[APK] added native lib ({so_src.stat().st_size // 1024} KiB)")
+
+    # oboe (AAudio via cpal) links the shared C++ runtime; without this the
+    # game .so fails to dlopen with "cannot locate symbol __cxa_pure_virtual".
+    libcpp = find_libcpp_shared()
+    if libcpp is not None:
+        with zipfile.ZipFile(apk, "a", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(libcpp, "lib/arm64-v8a/libc++_shared.so")
+        print(f"[APK] added libc++_shared.so ({libcpp.stat().st_size // 1024} KiB)")
+    else:
+        print("[APK] warning: libc++_shared.so not found in the Android NDK")
+
+
+def find_libcpp_shared() -> pathlib.Path | None:
+    """Locate libc++_shared.so in the installed NDK (arm64-v8a)."""
+    sdk = find_sdk()
+    ndk_dir = sdk / "ndk"
+    if not ndk_dir.is_dir():
+        return None
+    # Pre-r27 NDKs ship it under sources/cxx-stl/...; r27+ moved it into the
+    # toolchain sysroot next to the platform libraries.
+    candidates = sorted(
+        list(ndk_dir.glob("*/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so"))
+        + list(ndk_dir.glob(
+            "*/toolchains/llvm/prebuilt/*/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+        ))
+    )
+    return candidates[-1] if candidates else None
 
 
 def debug_keystore() -> pathlib.Path:

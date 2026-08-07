@@ -29,13 +29,13 @@
 - Vulkan 渲染全链路:Adreno 730 设备、共享区块显存池、间接多绘制
 - 游戏内第一人称交互(移动/视角/背包)基于 winit 鼠标补丁,当前基线已验证到键盘事件与点击事件层
 - 触摸操作:点击热键栏切换物品、长按丢弃;世界点击放置、长按摧毁、滑动转视角
+- 音频:rodio → cpal → AAudio(oboe),与桌面共用同一播放后端(含 3D 衰减),声音资源完整打包
 
 ### 已知限制
 
 - **无触摸 UI**:触屏输入不会操作游戏,必须使用物理键鼠
 - **视角转动是相对增量**:进入世界后通过窗口指针捕获(pointer capture)锁定物理鼠标,系统直接上报相对位移;菜单中仍为绝对光标
 - **系统栏区域未覆盖**:Android 12+ 上系统栏(横屏时位于侧边)仍占约 106px,全屏沉浸待完善
-- **无音频**:Android 构建为静音(音频后端 no-op),APK 打包时剔除了全部声音资源
 - **无 OptiFine 光影**:光影为 OpenGL 后端专属,Android 仅 Vulkan
 - **无软键盘 IME**:聊天输入需要物理键盘
 - **单机不可用**:单人集成服务器不在项目基线
@@ -45,7 +45,6 @@
 - 触摸 UI(虚拟摇杆等)
 - OpenGL 后端
 - Microsoft 登录 UI(桌面版已有内置账号管理器,Android 侧未接入)
-- 音频后端
 
 ## 安卓构建与打包
 
@@ -85,9 +84,9 @@ cargo ndk -t arm64-v8a --platform 31 -o target/android build --release --bin mc1
 python tools/build_apk.py
 ```
 
-产出 `dist/Minecraft112Rust.apk`(约 13 MiB,含资源与原生库)。脚本自动:
-- 剔除声音资源(音频 no-op)与点文件(aapt2 默认忽略)
-- 写入 `mcassets.list` 解压清单
+产出 `dist/Minecraft112Rust.apk`(约 123 MiB,含全部声音资源与原生库)。脚本自动:
+- 写入 `mcassets.list` 解压清单(跳过点文件)
+- `aapt2 compile` 编译 `res/` 资源(启动图标)并链接
 - aapt2 link + zipalign + apksigner 签名(复用系统 debug keystore)
 
 **4. 安装**

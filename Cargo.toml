@@ -64,8 +64,15 @@ ndk = "0.9"
 ndk-sys = "0.6"
 jni = "0.21"
 android_logger = "0.14"
+# oboe's C++ runtime: the default static libc++ is never found by the NDK
+# linker (only libc++_shared.so is on the search path), which left undefined
+# __cxa_* symbols that broke dlopen at launch. Link the shared STL and ship
+# libc++_shared.so in the APK (see build_apk.py).
+cpal = { version = "0.15", features = ["oboe-shared-stdcxx"] }
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(windows, target_os = "android"))'.dependencies]
+# rodio 0.17 ships cpal unconditionally; the same backend code drives
+# WASAPI on Windows and AAudio on Android (the latter via oboe).
 rodio = { version = "0.17.3", default-features = false, features = ["vorbis"] }
 
 [profile.dev]

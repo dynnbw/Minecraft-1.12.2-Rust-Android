@@ -1551,6 +1551,7 @@ dependencies = [
  "bytes",
  "cipher",
  "clap",
+ "cpal",
  "env_logger",
  "flate2",
  "gl",

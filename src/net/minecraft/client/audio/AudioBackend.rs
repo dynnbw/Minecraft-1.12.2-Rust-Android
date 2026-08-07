@@ -46,7 +46,7 @@ pub trait SoundBackend {
 }
 
 pub fn createPlatformBackend() -> Box<dyn SoundBackend> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "android"))]
     {
         match WindowsAudioBackend::new() {
             Ok(backend) => Box::new(backend),
@@ -56,9 +56,9 @@ pub fn createPlatformBackend() -> Box<dyn SoundBackend> {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "android")))]
     {
-        log::info!("Minecraft audio output is disabled on this non-Windows build");
+        log::info!("Minecraft audio output is disabled on this build");
         Box::new(UnavailableAudioBackend)
     }
 }
@@ -83,7 +83,7 @@ impl SoundBackend for UnavailableAudioBackend {
     fn setListener(&mut self, _listener: ListenerTransform) {}
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "android"))]
 mod windows_backend {
     use std::collections::HashMap;
     use std::io::{BufReader, Cursor};
@@ -363,5 +363,5 @@ mod windows_backend {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "android"))]
 use windows_backend::WindowsAudioBackend;
