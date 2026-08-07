@@ -1,0 +1,2 @@
+请将touch.png 手动放入......\assets\minecraft\textures\gui
+Please manually copy touch.png to the folder ......\assets\minecraft\textures\gui.
