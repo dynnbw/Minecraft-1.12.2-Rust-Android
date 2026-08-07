@@ -78,6 +78,7 @@ use crate::net::minecraft::client::gui::ScaledResolution::ScaledResolution;
 use crate::net::minecraft::client::main::GameConfiguration::{GameConfiguration, PropertyMap, Proxy};
 use crate::net::minecraft::client::renderer::ItemRenderer::ItemRenderer;
 use crate::net::minecraft::client::resources::Locale::Locale;
+use crate::net::minecraft::client::resources::LanguageManager::LanguageManager;
 use crate::net::minecraft::client::resources::SimpleReloadableResourceManager::ResourceManager;
 use crate::net::minecraft::client::resources::ResourcePackRepository::{
     defaultPackIconBytes, defaultPackIconLocation, folder_assets_root, ResourcePackKind,
@@ -385,6 +386,9 @@ enum RuntimeGuiAction {
     OpenOfflineLogin,
     AccountAuthenticated { session: Session, returnToManager: bool },
     ToggleUnicode,
+    /// MCP `GuiLanguage.List.elementClicked`: switch the current language,
+    /// persist it to options.txt and refresh the locale/fonts/screen.
+    SetLanguage(String),
     SetFov(f32),
     ToggleForceSprint,
     OpenVideoSettings,
@@ -709,6 +713,10 @@ struct MainMenuRuntime {
     /// requested by a server-driven GuiContainer transition. The winit
     /// application owns the actual OS cursor and consumes this request.
     pendingWorldMouseFocus: Option<bool>,
+    /// MCP `Minecraft#mcLanguageManager`: parsed from each pack's
+    /// `pack.mcmeta` "language" section; owns the current language and the
+    /// sorted language list the GuiLanguage screen renders.
+    languageManager: LanguageManager,
 }
 
 impl MainMenuRuntime {
@@ -743,6 +751,12 @@ impl MainMenuRuntime {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as i64;
+        // MCP `Minecraft#mcLanguageManager`: built with the configured
+        // language, then populated from every pack's language metadata
+        // (MCP `LanguageManager.parseLanguageMetadata` during
+        // `refreshResources`).
+        let mut languageManager = LanguageManager::new(minecraft.gameSettings.language.clone());
+        languageManager.parseLanguageMetadata(&minecraft.resourceManager.read_pack_metadatas("pack"));
         let mut runtime = Self {
             locale,
             fontRendererObj,
@@ -784,6 +798,7 @@ impl MainMenuRuntime {
             lastInventoryClick: None,
             inventoryShiftClickedStack: ItemStack::EMPTY,
             pendingWorldMouseFocus: None,
+            languageManager,
         };
         runtime.resize(minecraft, framebufferWidth, framebufferHeight);
         Ok(runtime)
@@ -3579,7 +3594,7 @@ impl MainMenuRuntime {
             ActiveGuiScreen::ResourcePacks(screen) => screen.initGui(width, height, &self.locale),
             ActiveGuiScreen::Multiplayer(screen) => screen.initGui(width, height, &self.locale),
             ActiveGuiScreen::WorldSelection(screen) => screen.initGui(width, height, &self.locale),
-            ActiveGuiScreen::Language { screen, .. } => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
+            ActiveGuiScreen::Language { screen, .. } => screen.initGui(width, height, &self.locale, &minecraft.gameSettings, &self.languageManager),
             ActiveGuiScreen::AddServer { screen, .. } => screen.initGui(width, height, &self.locale, &self.fontRendererObj),
             ActiveGuiScreen::DirectConnect { screen, .. } => screen.initGui(width, height, &self.locale, &self.fontRendererObj, &minecraft.gameSettings.lastServer),
             ActiveGuiScreen::ConfirmDelete { screen, .. } => screen.initGui(width, height, &self.fontRendererObj),
@@ -3648,6 +3663,27 @@ impl MainMenuRuntime {
     fn openLanguage(&mut self, minecraft: &Minecraft, parent: ScreenId) {
         self.currentScreen = ActiveGuiScreen::Language { screen: GuiLanguage::new(minecraft.gameSettings.language.clone()), parent };
         self.initCurrentScreen(minecraft);
+    }
+
+    /// MCP `GuiLanguage.List.elementClicked` + `Minecraft.refreshResources`:
+    /// switch the language manager and `gameSettings.language`, reload the
+    /// `Locale` (MCP `LanguageManager.onResourceManagerReload` loads
+    /// `[en_us, current]`), refresh the font unicode/bidi flags and re-init
+    /// the visible screen so every translated label updates. The caller
+    /// persists options.txt first, as elementClicked does via saveOptions.
+    fn setLanguage(&mut self, minecraft: &Minecraft, languageCode: &str) {
+        self.languageManager.setCurrentLanguage(languageCode);
+        let mut languageCodes = vec!["en_us"];
+        if languageCode != "en_us" {
+            languageCodes.push(languageCode);
+        }
+        self.locale = Locale::load(&minecraft.resourceManager, &languageCodes, &["minecraft"]);
+        let unicode = self.locale.is_unicode() || minecraft.gameSettings.forceUnicodeFont;
+        self.fontRendererObj.set_unicode_flag(unicode);
+        self.fontRendererObj.set_bidi_flag(self.languageManager.isCurrentLanguageBidirectional());
+        self.worldRenderer.setUnicodeFlag(unicode);
+        self.initCurrentScreen(minecraft);
+        self.lastGuiFrame = Instant::now();
     }
 
     fn openDirectConnect(&mut self, minecraft: &Minecraft) {
@@ -4905,10 +4941,11 @@ impl MainMenuRuntime {
                 }
             }),
             ActiveGuiScreen::Language { screen, parent } => screen.mouseClicked(mouseX, mouseY, 0).map(|interaction| {
-                playGuiSound(soundHandler, Some(&interaction.sound));
+                playGuiSound(soundHandler, interaction.sound.as_ref());
                 match interaction.action {
                     GuiLanguageAction::Done => RuntimeGuiAction::Switch(*parent),
                     GuiLanguageAction::ToggleUnicode => RuntimeGuiAction::ToggleUnicode,
+                    GuiLanguageAction::SelectLanguage(code) => RuntimeGuiAction::SetLanguage(code),
                 }
             }),
             ActiveGuiScreen::AddServer { screen, editingIndex, .. } => screen.mouseClicked(mouseX, mouseY, 0, &self.fontRendererObj, &self.locale).map(|interaction| {
@@ -5141,6 +5178,7 @@ impl MainMenuRuntime {
             }
             ActiveGuiScreen::ResourcePacks(screen) => screen.scroll(lines),
             ActiveGuiScreen::ShaderSettings(screen) => screen.scroll(lines),
+            ActiveGuiScreen::Language { screen, .. } => screen.scroll(lines),
             _ => false,
         }
     }
@@ -6192,6 +6230,16 @@ impl MinecraftApplication {
                 runtime.fontRendererObj.set_unicode_flag(unicode);
                 runtime.worldRenderer.setUnicodeFlag(unicode);
                 runtime.resize(minecraft, extent.width, extent.height);
+            }
+            RuntimeGuiAction::SetLanguage(code) => {
+                let minecraft = self.minecraft.as_mut().expect("Minecraft state");
+                minecraft.gameSettings.language = code.clone();
+                if let Err(error) = minecraft.gameSettings.saveOptions(&minecraft.gameDir) {
+                    log::error!("Couldn't save options.txt: {error}");
+                }
+                let runtime = self.mainMenu.as_mut().expect("GUI runtime");
+                runtime.setLanguage(minecraft, &code);
+                log::info!("switched game language to {code}");
             }
             RuntimeGuiAction::SetFov(value) => {
                 let minecraft = self.minecraft.as_mut().expect("Minecraft state");
