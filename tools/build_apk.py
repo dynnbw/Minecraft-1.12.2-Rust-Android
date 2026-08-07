@@ -129,9 +129,16 @@ def main() -> None:
     DIST.mkdir(exist_ok=True)
 
     unaligned = DIST / "base.unaligned.apk"
-    run([aapt2, "link", "-o", unaligned, "-I", jar, "--manifest", ROOT / "AndroidManifest.xml",
-         "--min-sdk-version", "31", "--target-sdk-version", "34",
-         "--version-code", "1", "--version-name", "0.1", "-A", STAGE])
+    link_args = [aapt2, "link", "-o", unaligned, "-I", jar, "--manifest", ROOT / "AndroidManifest.xml",
+                 "--min-sdk-version", "31", "--target-sdk-version", "34",
+                 "--version-code", "1", "--version-name", "0.1", "-A", STAGE]
+    res_dir = ROOT / "res"
+    if res_dir.is_dir():
+        # Compile bundled resources (e.g. the launcher icon) into the table.
+        compiled_res = DIST / "res.zip"
+        run([aapt2, "compile", "--dir", res_dir, "-o", compiled_res])
+        link_args += ["-R", compiled_res]
+    run(link_args)
 
     add_native_libs(unaligned)
 

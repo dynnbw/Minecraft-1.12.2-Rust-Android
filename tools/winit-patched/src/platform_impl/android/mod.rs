@@ -209,6 +209,12 @@ impl<T: 'static> EventLoop<T> {
     /// is locked and the event's X/Y are already the movement deltas; without
     /// capture they are absolute positions, so the delta is the difference
     /// from the previous position (Android has no native relative mouse).
+    ///
+    /// Captured deltas skip the pointer acceleration curve that the absolute
+    /// cursor position passes through, so the same physical mouse movement
+    /// looks slower once capture is active; scale them back up to match the
+    /// pre-capture feel (Android's acceleration is roughly 2x at the speeds
+    /// used for look rotation).
     fn emit_relative_motion<F>(
         &mut self,
         captured: bool,
@@ -218,8 +224,9 @@ impl<T: 'static> EventLoop<T> {
     ) where
         F: FnMut(event::Event<T>, &RootAEL),
     {
+        const CAPTURED_MOUSE_SCALE: f64 = 2.0;
         let delta = if captured {
-            (position.x, position.y)
+            (position.x * CAPTURED_MOUSE_SCALE, position.y * CAPTURED_MOUSE_SCALE)
         } else if let Some((last_x, last_y)) = self.last_mouse {
             (position.x - last_x, position.y - last_y)
         } else {

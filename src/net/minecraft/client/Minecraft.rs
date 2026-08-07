@@ -5447,6 +5447,10 @@ struct MinecraftApplication {
     keyboardModifiers: ModifiersState,
     worldMouseGrabbed: bool,
     windowFocused: bool,
+    /// True while the app is backgrounded (Android suspend). The winit window,
+    /// renderer and game session stay alive; only drawing is paused because the
+    /// native window (and Vulkan surface) is destroyed until the next resume.
+    suspended: bool,
     debugFps: i32,
     framesThisSecond: i32,
     lastFpsUpdate: Instant,
@@ -5725,6 +5729,7 @@ impl MinecraftApplication {
             #[cfg(target_os = "android")]
             touchActiveButton: None,
             windowFocused: true,
+            suspended: false,
             debugFps: 0,
             framesThisSecond: 0,
             lastFpsUpdate: Instant::now(),
@@ -6601,7 +6606,34 @@ impl MinecraftApplication {
 
 impl ApplicationHandler for MinecraftApplication {
     fn resumed(&mut self, eventLoop: &ActiveEventLoop) {
+        #[cfg(not(target_os = "android"))]
         if self.window.is_some() { return; }
+        #[cfg(target_os = "android")]
+        if self.window.is_some() {
+            // Android background/resume cycle: the winit window, the Vulkan
+            // device and the game session survived `suspended`; only the
+            // native window (and with it the surface and swapchain) was
+            // destroyed. Reacquire it and resume rendering; if that fails,
+            // fall back to a full rebuild (main menu) instead of exiting.
+            self.suspended = false;
+            let reacquired = match (self.window.as_ref(), self.renderer.as_mut()) {
+                (Some(window), Some(renderer)) => match renderer.reacquireSurface(window) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        log::warn!("failed reacquiring Vulkan surface after resume: {error:#}");
+                        false
+                    }
+                },
+                _ => false,
+            };
+            if reacquired {
+                log::info!("resumed: Vulkan surface reacquired, continuing game session");
+                self.requestRedraw();
+                return;
+            }
+            log::warn!("resumed: surface reacquisition failed; rebuilding the application from scratch");
+            self.renderer = None; self.mainMenu = None; self.window = None;
+        }
         let minecraft = self.minecraft.as_ref().expect("Minecraft application state");
         let mut attributes = Window::default_attributes()
             .with_title("Minecraft 1.12.2")
@@ -7208,6 +7240,11 @@ impl ApplicationHandler for MinecraftApplication {
             }
             WindowEvent::RedrawRequested => {
                 self.redrawPending = false;
+                if self.suspended {
+                    // Backgrounded: the native window (and Vulkan surface) is
+                    // gone; skip drawing until the next resume reacquires it.
+                    return;
+                }
                 let mut frameProfileSample = None;
                 if self.pendingResizeSince.is_none() {
                     let frameInterval = self.currentFrameInterval();
@@ -7326,8 +7363,20 @@ impl ApplicationHandler for MinecraftApplication {
     }
 
     fn suspended(&mut self, _eventLoop: &ActiveEventLoop) {
+        // Keep the game session (mainMenu/connection), the winit window and
+        // the Vulkan device alive while backgrounded; only the native surface
+        // dies and is reacquired on resume. Dropping everything here is what
+        // used to send the player back to the main menu (or crash the driver
+        // while tearing down the device under a dying surface).
+        self.suspended = true;
         self.setWorldMouseGrabbed(false);
-        self.mainMenu = None; self.renderer = None; self.window = None; self.redrawPending = false;
+        self.redrawPending = false;
+        #[cfg(target_os = "android")]
+        {
+            self.touchPress = None;
+            self.lastTouchPosition = None;
+            self.touchActiveButton = None;
+        }
     }
 
     fn about_to_wait(&mut self, eventLoop: &ActiveEventLoop) {
@@ -7395,7 +7444,7 @@ impl ApplicationHandler for MinecraftApplication {
             while self.nextTickDeadline <= now { self.nextTickDeadline += CLIENT_TICK_INTERVAL; }
         }
 
-        let wakeup = if self.window.is_some() && self.mainMenu.is_some() {
+        let wakeup = if self.window.is_some() && self.mainMenu.is_some() && !self.suspended {
             if self.isFramerateLimitBelowMax() {
                 if now >= self.nextFrameDeadline {
                     self.requestRedraw();
@@ -7407,6 +7456,10 @@ impl ApplicationHandler for MinecraftApplication {
                 self.requestRedraw();
                 None
             }
+        } else if self.suspended {
+            // Backgrounded: keep ticking (server keepalives) but never render;
+            // the surface is dead until the next resume reacquires it.
+            Some(self.nextTickDeadline)
         } else {
             Some(self.nextTickDeadline)
         };

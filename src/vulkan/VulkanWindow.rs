@@ -973,6 +973,32 @@ impl VulkanWindow {
         (size.width, size.height)
     }
 
+    /// Recreates the Vulkan surface and swapchain after the app resumes from
+    /// background. Android destroys the ANativeWindow (and with it the
+    /// VkSurfaceKHR and every swapchain image) while the app is paused; the
+    /// winit window and the Vulkan device survive, so only presentation state
+    /// needs rebuilding.
+    #[cfg(target_os = "android")]
+    pub fn reacquireSurface(&mut self, window: &Window) -> anyhow::Result<()> {
+        log::info!("reacquiring Vulkan surface after resume");
+        unsafe {
+            self.surfaceLoader.destroy_surface(self.surface, None);
+        }
+        let displayHandle = window
+            .display_handle()
+            .context("failed to obtain the native display handle")?
+            .as_raw();
+        let windowHandle = window
+            .window_handle()
+            .context("failed to obtain the native window handle")?
+            .as_raw();
+        self.surface = unsafe {
+            ash_window::create_surface(&self.entry, &self.instance, displayHandle, windowHandle, None)
+        }
+        .context("failed recreating Vulkan surface after resume")?;
+        self.recreateSwapchain(window)
+    }
+
     fn recreateSwapchain(&mut self, window: &Window) -> anyhow::Result<()> {
         let (width, height) = self.nativeSurfaceSize(window);
         if width == 0 || height == 0 {

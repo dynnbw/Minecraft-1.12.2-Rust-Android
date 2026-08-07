@@ -82,6 +82,15 @@ impl DesktopRenderer {
         }
     }
 
+    /// Recreates the Vulkan surface and swapchain after resuming from
+    /// background, where Android destroyed the ANativeWindow underneath us.
+    #[cfg(target_os = "android")]
+    pub fn reacquireSurface(&mut self, window: &Window) -> anyhow::Result<()> {
+        match self {
+            Self::Vulkan(renderer) => renderer.reacquireSurface(window),
+        }
+    }
+
     pub fn drawFrame(&mut self, window: &Window, frame: &CpuFrame) -> anyhow::Result<()> {
         match self {
             Self::Vulkan(renderer) => renderer.drawFrame(window, frame),
