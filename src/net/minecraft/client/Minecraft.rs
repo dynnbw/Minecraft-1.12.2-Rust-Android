@@ -5002,6 +5002,13 @@ impl MainMenuRuntime {
                     None
                 }
             }
+            ActiveGuiScreen::Language { screen, .. } => {
+                if screen.mouseDragged(mouseY) {
+                    Some(RuntimeGuiAction::None)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -5032,6 +5039,7 @@ impl MainMenuRuntime {
             ActiveGuiScreen::ChatSettings(screen) => screen.mouseReleased(mouseX, mouseY),
             ActiveGuiScreen::ShaderSettings(screen) => screen.mouseReleased(),
             ActiveGuiScreen::ResourcePacks(screen) => screen.mouseReleased(),
+            ActiveGuiScreen::Language { screen, .. } => screen.mouseReleased(),
             _ => {}
         }
     }
