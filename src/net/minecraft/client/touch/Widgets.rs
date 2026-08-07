@@ -181,8 +181,10 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
     // Ascend/descend stack above the jump (shown while flying).
     let ascend = (jumpRect.0 + 8, jumpRect.1 - 8 - 40, 40, 40);
     let descend = (jumpRect.0 + 8, ascend.1 - 8 - 40, 40, 40);
-    // Chat left-mid-upper, pause right-mid-upper (mirrored).
-    let topY = height / 2 - 60;
+    // Chat left-mid-upper, pause right-mid-upper (mirrored). Kept above the
+    // DPad top edge (8px gap) so the touch HUD never overlaps the movement
+    // grid; on tall screens it stays in the mid-upper band.
+    let topY = (height / 2 - 60).min(height - 16 - (cell * 3 + gap * 2) - 8 - 40).max(12);
     let chat = (12, topY, 40, 40);
     let pause = (width - 12 - 40, topY, 40, 40);
     // Backpack: right of the 9th hotbar slot. Hotbar: 9 slots x 20px,

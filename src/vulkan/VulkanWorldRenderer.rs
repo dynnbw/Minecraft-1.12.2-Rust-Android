@@ -1392,6 +1392,9 @@ pub struct WorldRenderCapture {
     vulkanDevice: String,
     chatInput: Option<GuiTextFieldRenderState>,
     worldGuiDrawList: Option<GuiDrawList>,
+    /// Bedrock-style touch HUD (Android). None while the touch layer is
+    /// disabled; appended to the world frame above the HUD/container GUI.
+    touchHudDrawList: Option<GuiDrawList>,
     chatOpacity: f32,
     chatScale: f32,
     chatWidth: f32,
@@ -2290,6 +2293,7 @@ impl VulkanWorldRenderer {
         vulkanDevice: String,
         chatInput: Option<GuiTextFieldRenderState>,
         worldGuiDrawList: Option<GuiDrawList>,
+        touchHudDrawList: Option<GuiDrawList>,
         chatOpacity: f32,
         chatScale: f32,
         chatWidth: f32,
@@ -2667,6 +2671,7 @@ impl VulkanWorldRenderer {
                 vulkanDevice: vulkanDevice.clone(),
                 chatInput: chatInput.clone(),
                 worldGuiDrawList: worldGuiDrawList.clone(),
+                touchHudDrawList,
                 chatOpacity,
                 chatScale,
                 chatWidth,
@@ -3471,6 +3476,7 @@ impl VulkanWorldRenderer {
             vulkanDevice,
             chatInput,
             worldGuiDrawList,
+            touchHudDrawList,
             chatOpacity,
             chatScale,
             chatWidth,
@@ -10050,6 +10056,14 @@ fn build_ingame_hud(
     // for the pause menu and its child option screens while retaining the live
     // multiplayer world behind the translucent gradient.
     if let Some(drawList) = &capture.worldGuiDrawList {
+        begin = indices.len() as u32;
+        append_font_draw_list(drawList, atlas, &mut vertices, &mut indices);
+        push_hud_range(&mut drawRanges, HudPipelineKind::Alpha, begin, indices.len() as u32);
+    }
+
+    // Bedrock-style touch HUD sits above every GUI drawn so far (hotbar,
+    // containers, world screens), matching the Bedrock layer order.
+    if let Some(drawList) = &capture.touchHudDrawList {
         begin = indices.len() as u32;
         append_font_draw_list(drawList, atlas, &mut vertices, &mut indices);
         push_hud_range(&mut drawRanges, HudPipelineKind::Alpha, begin, indices.len() as u32);

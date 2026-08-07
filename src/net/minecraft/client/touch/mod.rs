@@ -6,6 +6,7 @@
 #[path = "Widgets.rs"] pub mod Widgets;
 #[path = "PointerState.rs"] pub mod PointerState;
 #[path = "KeyState.rs"] pub mod KeyState;
+#[path = "Draw.rs"] pub mod Draw;
 
 #[cfg(any(target_os = "android", test))]
 use std::collections::HashMap;
@@ -181,6 +182,15 @@ impl TouchRuntime {
 
     pub fn layout(&self) -> &Widgets::BedrockLayout {
         &self.layout
+    }
+
+    /// The currently held DPad direction, if any. Mirrors the drawn HUD
+    /// highlight to the widget hit-testing so both stay consistent.
+    pub fn held_direction(&self) -> Option<Widgets::DpadDirection> {
+        self.buttonHeld.values().find_map(|kind| match kind {
+            HeldKind::Dpad(direction) => Some(*direction),
+            _ => None,
+        })
     }
 
     pub fn reset(&mut self) {

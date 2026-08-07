@@ -49,6 +49,8 @@
 #[path = "GuiSubtitleOverlay.rs"] pub mod GuiSubtitleOverlay;
 pub mod GuiOverlayDebug;
 #[path = "GuiScreenOptionsSounds.rs"] pub mod GuiScreenOptionsSounds;
+#[cfg(target_os = "android")]
+#[path = "GuiTouchSettings.rs"] pub mod GuiTouchSettings;
 #[path = "ScreenChatOptions.rs"] pub mod ScreenChatOptions;
 #[path = "GuiCustomizeSkin.rs"] pub mod GuiCustomizeSkin;
 #[path = "GuiScreenResourcePacks.rs"] pub mod GuiScreenResourcePacks;

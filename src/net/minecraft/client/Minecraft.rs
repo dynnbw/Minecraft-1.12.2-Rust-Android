@@ -71,6 +71,8 @@ use crate::net::minecraft::client::gui::GuiOptions::{GuiOptions, GuiOptionsActio
 use crate::net::minecraft::client::gui::GuiWorldSelection::{GuiWorldSelection, GuiWorldSelectionAction};
 use crate::net::minecraft::client::gui::GuiVideoSettings::{GuiVideoSettings, GuiVideoSettingsAction};
 use crate::net::minecraft::client::gui::GuiScreenOptionsSounds::{GuiScreenOptionsSounds, GuiScreenOptionsSoundsAction};
+#[cfg(target_os = "android")]
+use crate::net::minecraft::client::gui::GuiTouchSettings::{GuiTouchSettings, GuiTouchSettingsAction};
 use crate::net::minecraft::client::gui::ScreenChatOptions::{ScreenChatOptions, ScreenChatOptionsAction};
 use crate::net::minecraft::client::gui::GuiCustomizeSkin::{GuiCustomizeSkin, GuiCustomizeSkinAction};
 use crate::net::minecraft::client::gui::GuiScreenResourcePacks::{GuiScreenResourcePacks, GuiScreenResourcePacksAction};
@@ -338,6 +340,8 @@ enum ActiveGuiScreen {
     ChatSettings(ScreenChatOptions),
     SkinSettings(GuiCustomizeSkin),
     ResourcePacks(GuiScreenResourcePacks),
+    #[cfg(target_os = "android")]
+    TouchSettings(GuiTouchSettings),
     Multiplayer(GuiMultiplayer),
     WorldSelection(GuiWorldSelection),
     Language { screen: GuiLanguage, parent: ScreenId },
@@ -366,6 +370,8 @@ enum WorldGuiScreen {
     ChatSettings(ScreenChatOptions),
     SkinSettings(GuiCustomizeSkin),
     ResourcePacks(GuiScreenResourcePacks),
+    #[cfg(target_os = "android")]
+    TouchSettings(GuiTouchSettings),
     EditSign(GuiEditSign),
     GameOver(GuiGameOver),
     GameOverConfirm {
@@ -407,6 +413,10 @@ enum RuntimeGuiAction {
     OpenWorldChatSettings,
     OpenWorldSkinSettings,
     OpenWorldResourcePacks,
+    #[cfg(target_os = "android")]
+    OpenTouchSettings,
+    #[cfg(target_os = "android")]
+    TouchSettingsAction(GuiTouchSettingsAction),
     ReturnToOptions,
     ReturnToWorldOptions,
     SetSoundLevel(SoundCategory, f32),
@@ -875,6 +885,8 @@ impl MainMenuRuntime {
             Some(WorldGuiScreen::ChatSettings(screen)) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             Some(WorldGuiScreen::SkinSettings(screen)) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             Some(WorldGuiScreen::ResourcePacks(screen)) => screen.initGui(width, height, &self.locale),
+            #[cfg(target_os = "android")]
+            Some(WorldGuiScreen::TouchSettings(screen)) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             Some(WorldGuiScreen::EditSign(screen)) => {
                 screen.initGui(width, height, &self.locale);
             }
@@ -982,6 +994,17 @@ impl MainMenuRuntime {
         self.initCurrentScreen(minecraft);
     }
     fn openWorldSoundSettings(&mut self, minecraft: &Minecraft) { self.worldGuiScreen = Some(WorldGuiScreen::SoundSettings(GuiScreenOptionsSounds::new())); self.initWorldGui(minecraft); }
+    #[cfg(target_os = "android")]
+    fn openTouchSettings(&mut self, minecraft: &Minecraft) {
+        self.currentScreen = ActiveGuiScreen::TouchSettings(GuiTouchSettings::new());
+        self.initCurrentScreen(minecraft);
+    }
+    #[cfg(target_os = "android")]
+    fn openWorldTouchSettings(&mut self, minecraft: &Minecraft) {
+        if !self.isWorld() { return; }
+        self.worldGuiScreen = Some(WorldGuiScreen::TouchSettings(GuiTouchSettings::new()));
+        self.initWorldGui(minecraft);
+    }
     fn openWorldChatSettings(&mut self, minecraft: &Minecraft) { self.worldGuiScreen = Some(WorldGuiScreen::ChatSettings(ScreenChatOptions::new())); self.initWorldGui(minecraft); }
     fn openWorldSkinSettings(&mut self, minecraft: &Minecraft) { self.worldGuiScreen = Some(WorldGuiScreen::SkinSettings(GuiCustomizeSkin::new())); self.initWorldGui(minecraft); }
     fn openWorldResourcePacks(&mut self, minecraft: &Minecraft) {
@@ -3599,6 +3622,8 @@ impl MainMenuRuntime {
             ActiveGuiScreen::ChatSettings(screen) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             ActiveGuiScreen::SkinSettings(screen) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             ActiveGuiScreen::ResourcePacks(screen) => screen.initGui(width, height, &self.locale),
+            #[cfg(target_os = "android")]
+            ActiveGuiScreen::TouchSettings(screen) => screen.initGui(width, height, &self.locale, &minecraft.gameSettings),
             ActiveGuiScreen::Multiplayer(screen) => screen.initGui(width, height, &self.locale),
             ActiveGuiScreen::WorldSelection(screen) => screen.initGui(width, height, &self.locale),
             ActiveGuiScreen::Language { screen, .. } => screen.initGui(width, height, &self.locale, &minecraft.gameSettings, &self.languageManager),
@@ -3889,6 +3914,65 @@ impl MainMenuRuntime {
         (mouseX, mouseY)
     }
 
+    /// Builds the Bedrock-style touch HUD draw list for the current frame.
+    /// None while the touch layer is disabled, while a modal world GUI is
+    /// open, or outside the world; only the backpack-close button while the
+    /// inventory is open. Highlights follow the held widgets in
+    /// `touchRuntime` (DPad direction, jump and sneak), so the HUD matches
+    /// the hit-testing.
+    #[cfg(target_os = "android")]
+    fn buildTouchHudDrawList(&mut self, minecraft: &Minecraft) -> Option<GuiDrawList> {
+        use crate::net::minecraft::client::touch::Draw::{
+            draw_button, draw_dpad, draw_jump, rect_of,
+        };
+        use crate::net::minecraft::client::touch::Widgets::bedrock_geometry;
+        use crate::net::minecraft::client::touch::TouchRuntime;
+        if !minecraft.gameSettings.touch.enabled {
+            return None;
+        }
+        let width = self.scaledResolution.scaled_width();
+        let height = self.scaledResolution.scaled_height();
+        let layout = bedrock_geometry(width, height);
+        if self.isInventoryOpen() {
+            // Only the close button while the inventory is open; the rest of
+            // the touch layer would cover the slots.
+            let mut drawList = GuiDrawList::new();
+            draw_button(&mut drawList, &layout.backpackClose, false);
+            return Some(drawList);
+        }
+        if self.isModalWorldGuiOpen() {
+            // Chat or a world GUI (pause menu, options) owns the frame.
+            return None;
+        }
+        let flying = match &self.currentScreen {
+            ActiveGuiScreen::World { connection, .. }
+            | ActiveGuiScreen::DownloadTerrain { connection, .. } => connection
+                .getSharedPlayState()
+                .withRead(|state| {
+                    state
+                        .thePlayer
+                        .as_ref()
+                        .is_some_and(|player| player.capabilities.isFlying)
+                }),
+            _ => false,
+        };
+        let direction = self.touchRuntime.as_ref().and_then(TouchRuntime::held_direction);
+        let keys = self.touchRuntime.as_ref().map(|runtime| &runtime.keys);
+        let mut drawList = GuiDrawList::new();
+        draw_dpad(&mut drawList, layout.dpad, direction);
+        draw_button(&mut drawList, &layout.sneak, keys.is_some_and(|keys| keys.sneak || keys.sneakLocked));
+        draw_button(&mut drawList, &layout.chat, false);
+        draw_button(&mut drawList, &layout.pause, false);
+        draw_button(&mut drawList, &layout.backpack, false);
+        let jumpRect = rect_of(&layout.jump);
+        draw_jump(&mut drawList, jumpRect, keys.is_some_and(|keys| keys.jump), flying);
+        if flying {
+            draw_button(&mut drawList, &layout.ascend, false);
+            draw_button(&mut drawList, &layout.descend, false);
+        }
+        Some(drawList)
+    }
+
     fn draw(
         &mut self,
         minecraft: &Minecraft,
@@ -4015,6 +4099,8 @@ impl MainMenuRuntime {
                     WorldGuiScreen::ChatSettings(screen) => screen.drawScreenInWorld(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
                     WorldGuiScreen::SkinSettings(screen) => screen.drawScreenInWorld(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
                     WorldGuiScreen::ResourcePacks(screen) => screen.drawScreenInWorld(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
+                    #[cfg(target_os = "android")]
+                    WorldGuiScreen::TouchSettings(screen) => screen.drawScreenInWorld(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
                     WorldGuiScreen::EditSign(screen) => screen.drawScreen(
                         &mut drawList, &mut self.fontRendererObj, &self.locale,
                         mouseX, mouseY, partialTicks,
@@ -4034,6 +4120,10 @@ impl MainMenuRuntime {
                 .as_ref()
                 .and_then(|gui| gui.enchantmentBookRenderState(partialTicks));
             let recipeBookState = self.recipeBookRenderState();
+            #[cfg(target_os = "android")]
+            let touchHudDrawList = self.buildTouchHudDrawList(minecraft);
+            #[cfg(not(target_os = "android"))]
+            let touchHudDrawList = None;
             let capture = sharedState.withRead(|state| {
                 self.worldRenderer.capture(
                     state,
@@ -4058,6 +4148,7 @@ impl MainMenuRuntime {
                     graphicsDevice.to_owned(),
                     chatInput.clone(),
                     worldGuiDrawList.clone(),
+                    touchHudDrawList,
                     minecraft.gameSettings.chatOpacity,
                     minecraft.gameSettings.chatScale,
                     minecraft.gameSettings.chatWidth,
@@ -4139,6 +4230,8 @@ impl MainMenuRuntime {
             ActiveGuiScreen::ChatSettings(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::SkinSettings(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::ResourcePacks(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
+            #[cfg(target_os = "android")]
+            ActiveGuiScreen::TouchSettings(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::Multiplayer(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::WorldSelection(screen) => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks),
             ActiveGuiScreen::Language { screen, .. } => screen.drawScreen(&mut drawList, &mut self.fontRendererObj, &self.locale, mouseX, mouseY, partialTicks),
@@ -4753,6 +4846,8 @@ impl MainMenuRuntime {
                             GuiOptionsAction::OpenChatSettings => RuntimeGuiAction::OpenWorldChatSettings,
                             GuiOptionsAction::OpenResourcePacks => RuntimeGuiAction::OpenWorldResourcePacks,
                             GuiOptionsAction::OpenSnooper => RuntimeGuiAction::NotConnected("GuiSnooper"),
+                            #[cfg(target_os = "android")]
+                            GuiOptionsAction::OpenTouchSettings => RuntimeGuiAction::OpenTouchSettings,
                         }
                     }),
                 Some(WorldGuiScreen::VideoSettings(screen)) => screen
@@ -4780,6 +4875,11 @@ impl MainMenuRuntime {
                 Some(WorldGuiScreen::SoundSettings(screen)) => screen.mouseClicked(mouseX, mouseY, 0, &self.locale, settings).map(|interaction| {
                     playGuiSound(soundHandler, interaction.sound.as_ref());
                     match interaction.action { GuiScreenOptionsSoundsAction::Done => RuntimeGuiAction::ReturnToWorldOptions, other => mapSoundSettingsAction(other) }
+                }),
+                #[cfg(target_os = "android")]
+                Some(WorldGuiScreen::TouchSettings(screen)) => screen.mouseClicked(mouseX, mouseY, 0, &self.locale, settings).map(|interaction| {
+                    playGuiSound(soundHandler, interaction.sound.as_ref());
+                    RuntimeGuiAction::TouchSettingsAction(interaction.action)
                 }),
                 Some(WorldGuiScreen::ChatSettings(screen)) => screen.mouseClicked(mouseX, mouseY, 0, &self.locale, settings).map(|interaction| {
                     playGuiSound(soundHandler, interaction.sound.as_ref());
@@ -4893,6 +4993,8 @@ impl MainMenuRuntime {
                     GuiOptionsAction::OpenChatSettings => RuntimeGuiAction::OpenChatSettings,
                     GuiOptionsAction::OpenResourcePacks => RuntimeGuiAction::OpenResourcePacks,
                     GuiOptionsAction::OpenSnooper => RuntimeGuiAction::NotConnected("GuiSnooper"),
+                    #[cfg(target_os = "android")]
+                    GuiOptionsAction::OpenTouchSettings => RuntimeGuiAction::OpenTouchSettings,
                 }
             }),
             ActiveGuiScreen::VideoSettings(screen) => screen
@@ -4916,6 +5018,11 @@ impl MainMenuRuntime {
             ActiveGuiScreen::SoundSettings(screen) => screen.mouseClicked(mouseX, mouseY, 0, &self.locale, settings).map(|interaction| {
                 playGuiSound(soundHandler, interaction.sound.as_ref());
                 match interaction.action { GuiScreenOptionsSoundsAction::Done => RuntimeGuiAction::ReturnToOptions, other => mapSoundSettingsAction(other) }
+            }),
+            #[cfg(target_os = "android")]
+            ActiveGuiScreen::TouchSettings(screen) => screen.mouseClicked(mouseX, mouseY, 0, &self.locale, settings).map(|interaction| {
+                playGuiSound(soundHandler, interaction.sound.as_ref());
+                RuntimeGuiAction::TouchSettingsAction(interaction.action)
             }),
             ActiveGuiScreen::ChatSettings(screen) => screen.mouseClicked(mouseX, mouseY, 0, &self.locale, settings).map(|interaction| {
                 playGuiSound(soundHandler, interaction.sound.as_ref());
@@ -5243,6 +5350,8 @@ impl MainMenuRuntime {
                 }
             }
             ActiveGuiScreen::SoundSettings(_) | ActiveGuiScreen::ChatSettings(_) | ActiveGuiScreen::SkinSettings(_) => Some(RuntimeGuiAction::ReturnToOptions),
+            #[cfg(target_os = "android")]
+            ActiveGuiScreen::TouchSettings(_) => Some(RuntimeGuiAction::ReturnToOptions),
             ActiveGuiScreen::Language { parent, .. } => Some(RuntimeGuiAction::Switch(*parent)),
             ActiveGuiScreen::AddServer { .. } | ActiveGuiScreen::ConfirmDelete { .. } => Some(RuntimeGuiAction::ReturnToMultiplayer { lastServer: None }),
             ActiveGuiScreen::DirectConnect { screen, .. } => Some(RuntimeGuiAction::ReturnToMultiplayer { lastServer: Some(screen.getAddress()) }),
@@ -5740,6 +5849,19 @@ impl MinecraftApplication {
     #[cfg(target_os = "android")]
     fn touchEnabled(&self) -> bool {
         self.minecraft.as_ref().is_some_and(|m| m.gameSettings.touch.enabled)
+    }
+
+    /// Clears every active touch state: the legacy bridge fields and the
+    /// Bedrock-style runtime. Used when the app suspends and when the touch
+    /// layer is toggled, so a partially-held widget cannot keep acting.
+    #[cfg(target_os = "android")]
+    fn clearTouchState(&mut self) {
+        self.touchPress = None;
+        self.lastTouchPosition = None;
+        self.touchActiveButton = None;
+        if let Some(mainMenu) = self.mainMenu.as_mut() {
+            mainMenu.touchRuntime = None;
+        }
     }
 
     /// Bedrock-style touch layer entry. Returns true when the touch was
@@ -6519,6 +6641,62 @@ impl MinecraftApplication {
                 let minecraft = self.minecraft.as_ref().expect("Minecraft state");
                 self.mainMenu.as_mut().expect("GUI runtime").openWorldResourcePacks(minecraft);
             }
+            #[cfg(target_os = "android")]
+            RuntimeGuiAction::OpenTouchSettings => {
+                let (runtime, minecraft) = match (self.mainMenu.as_mut(), self.minecraft.as_ref()) {
+                    (Some(runtime), Some(minecraft)) => (runtime, minecraft),
+                    _ => return Ok(false),
+                };
+                if runtime.isWorld() {
+                    runtime.openWorldTouchSettings(minecraft);
+                } else {
+                    runtime.openTouchSettings(minecraft);
+                }
+            }
+            #[cfg(target_os = "android")]
+            RuntimeGuiAction::TouchSettingsAction(action) => match action {
+                GuiTouchSettingsAction::ToggleEnabled => {
+                    let Some(minecraft) = self.minecraft.as_mut() else { return Ok(false); };
+                    minecraft.gameSettings.touch.enabled = !minecraft.gameSettings.touch.enabled;
+                    if let Err(error) = minecraft.gameSettings.saveOptions(&minecraft.gameDir) {
+                        log::error!("Couldn't save options.txt after toggling touch controls: {error}");
+                    }
+                    // Drop any partially-held widget keys instantly so they
+                    // cannot leak into the newly-disabled layer.
+                    self.clearTouchState();
+                    let (minecraft, mainMenu) = match (self.minecraft.as_mut(), self.mainMenu.as_mut()) {
+                        (Some(minecraft), Some(mainMenu)) => (minecraft, mainMenu),
+                        _ => return Ok(false),
+                    };
+                    mainMenu.initCurrentScreen(minecraft);
+                    mainMenu.initWorldGui(minecraft);
+                }
+                GuiTouchSettingsAction::ResetDefaults => {
+                    let Some(minecraft) = self.minecraft.as_mut() else { return Ok(false); };
+                    minecraft.gameSettings.touch = crate::net::minecraft::client::touch::TouchConfig::TouchConfig::default();
+                    if let Err(error) = minecraft.gameSettings.saveOptions(&minecraft.gameDir) {
+                        log::error!("Couldn't save options.txt after resetting touch controls: {error}");
+                    }
+                    self.clearTouchState();
+                    let (minecraft, mainMenu) = match (self.minecraft.as_mut(), self.mainMenu.as_mut()) {
+                        (Some(minecraft), Some(mainMenu)) => (minecraft, mainMenu),
+                        _ => return Ok(false),
+                    };
+                    mainMenu.initCurrentScreen(minecraft);
+                    mainMenu.initWorldGui(minecraft);
+                }
+                GuiTouchSettingsAction::Done => {
+                    let (runtime, minecraft) = match (self.mainMenu.as_mut(), self.minecraft.as_ref()) {
+                        (Some(runtime), Some(minecraft)) => (runtime, minecraft),
+                        _ => return Ok(false),
+                    };
+                    if runtime.isWorld() {
+                        runtime.openWorldOptions(minecraft);
+                    } else {
+                        runtime.switchTo(minecraft, ScreenId::Options)?;
+                    }
+                }
+            },
             RuntimeGuiAction::ReturnToOptions => {
                 let minecraft = self.minecraft.as_ref().expect("Minecraft state");
                 if let Err(error) = minecraft.gameSettings.saveOptions(&minecraft.gameDir) { log::error!("Couldn't save options.txt: {error}"); }
@@ -7466,6 +7644,8 @@ impl ApplicationHandler for MinecraftApplication {
                             | Some(WorldGuiScreen::SoundSettings(_))
                             | Some(WorldGuiScreen::ChatSettings(_))
                             | Some(WorldGuiScreen::SkinSettings(_)) => RuntimeGuiAction::ReturnToWorldOptions,
+                            #[cfg(target_os = "android")]
+                            Some(WorldGuiScreen::TouchSettings(_)) => RuntimeGuiAction::ReturnToWorldOptions,
                             Some(WorldGuiScreen::ShaderSettings(screen)) if screen.isOptionsView() => {
                                 if screen.closeOptionsView() {
                                     RuntimeGuiAction::ReloadShaderPack
@@ -7656,14 +7836,7 @@ impl ApplicationHandler for MinecraftApplication {
         self.setWorldMouseGrabbed(false);
         self.redrawPending = false;
         #[cfg(target_os = "android")]
-        {
-            self.touchPress = None;
-            self.lastTouchPosition = None;
-            self.touchActiveButton = None;
-            if let Some(mainMenu) = self.mainMenu.as_mut() {
-                mainMenu.touchRuntime = None;
-            }
-        }
+        self.clearTouchState();
     }
 
     fn about_to_wait(&mut self, eventLoop: &ActiveEventLoop) {

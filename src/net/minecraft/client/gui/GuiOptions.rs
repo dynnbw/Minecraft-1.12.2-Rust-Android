@@ -20,6 +20,8 @@ pub enum GuiOptionsAction {
     OpenChatSettings,
     OpenResourcePacks,
     OpenSnooper,
+    #[cfg(target_os = "android")]
+    OpenTouchSettings,
     Done,
 }
 
@@ -84,6 +86,13 @@ impl GuiOptions {
         self.GuiScreen.buttonList.push(GuiButton::newWithSize(
             100, width / 2 + 5, height / 6 + 66, 150, 20,
             locale.translate_key("options.controls"),
+        ));
+        // Bedrock-style touch layer (Android): settings button right of the
+        // controls row. Hidden on desktop builds.
+        #[cfg(target_os = "android")]
+        self.GuiScreen.buttonList.push(GuiButton::newWithSize(
+            111, width / 2 + 165, height / 6 + 66, 135, 20,
+            "Touch Controls",
         ));
         self.GuiScreen.buttonList.push(GuiButton::newWithSize(
             102, width / 2 - 155, height / 6 + 90, 150, 20,
@@ -174,6 +183,8 @@ impl GuiOptions {
                 103 => GuiOptionsAction::OpenChatSettings,
                 105 => GuiOptionsAction::OpenResourcePacks,
                 104 => GuiOptionsAction::OpenSnooper,
+                #[cfg(target_os = "android")]
+                111 => GuiOptionsAction::OpenTouchSettings,
                 200 => GuiOptionsAction::Done,
                 _ => return None,
             };
