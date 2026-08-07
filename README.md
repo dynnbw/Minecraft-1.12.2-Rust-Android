@@ -16,7 +16,7 @@
 
 本项目的目标不是制作一个"外观类似 Minecraft"的独立仿制游戏,而是在 Rust 中尽可能忠实地重建 Minecraft Java Edition 1.12.2 客户端的行为、状态、调用流程、网络协议、GUI、模型、动画和操作体验。原版 Minecraft 1.12.2 与对应 MCP 代码结构是行为基准。
 
-**Android 版定位**:远程多人客户端,Vulkan 渲染,物理键鼠操作,不做触摸适配。项目本身不含单人集成服务器。
+**Android 版定位**:远程多人客户端,Vulkan 渲染,物理键鼠为主,触屏通过桥接层映射为键鼠操作(点击/滑动/长按)。项目本身不含单人集成服务器。
 
 ## 功能状态(Android)
 
@@ -27,13 +27,14 @@
 - 物理键鼠:光标悬停、左右键点击、滚轮、键盘输入
 - 远程服务器连接(协议 340,legacy 离线会话)
 - Vulkan 渲染全链路:Adreno 730 设备、共享区块显存池、间接多绘制
-- 游戏内第一人称交互(移动/视角/背包)基于 winit 鼠标补丁,当前基线已验证到键盘事件与点击事件层
-- 触摸操作:点击热键栏切换物品、长按丢弃;世界点击放置、长按摧毁、滑动转视角
+- 游戏内第一人称交互(移动/视角/背包):物理键鼠与触摸桥接均可用
+- 触摸桥接:点击热键栏切换物品、长按(3s)丢弃;世界点击放置(右键)、长按摧毁(左键)、滑动转视角
 - 音频:rodio → cpal → AAudio(oboe),与桌面共用同一播放后端(含 3D 衰减),声音资源完整打包
+- 切后台保活:拉下通知栏 / 按 Home 后回到前台,直接恢复世界画面与服务器会话(不重建主菜单、不崩溃)
 
 ### 已知限制
 
-- **无触摸 UI**:触屏输入不会操作游戏,必须使用物理键鼠
+- **触摸桥接而非触摸 UI**:触屏输入映射为键鼠操作(无虚拟摇杆/触摸按钮),聊天等需要文本的界面仍需物理键盘
 - **视角转动是相对增量**:进入世界后通过窗口指针捕获(pointer capture)锁定物理鼠标,系统直接上报相对位移;菜单中仍为绝对光标
 - **系统栏区域未覆盖**:Android 12+ 上系统栏(横屏时位于侧边)仍占约 106px,全屏沉浸待完善
 - **无 OptiFine 光影**:光影为 OpenGL 后端专属,Android 仅 Vulkan
@@ -73,10 +74,10 @@ cargo run --manifest-path tools/spv-precompiler/Cargo.toml --release
 **2. 交叉编译 cdylib**
 
 ```bash
-cargo ndk -t arm64-v8a --platform 31 -o target/android build --release --bin mc112-client
+cargo ndk -t arm64-v8a --platform 31 -o target/android build --release --lib
 ```
 
-产出 `target/android/arm64-v8a/libminecraft_1_12_2_rust_vulkan.so`。
+产出 `target/android/arm64-v8a/libminecraft_1_12_2_rust_vulkan.so`(注意用 `--lib`,`--bin` 不会产出 APK 所需的 cdylib)。
 
 **3. 打包 APK**
 
@@ -87,6 +88,7 @@ python tools/build_apk.py
 产出 `dist/Minecraft112Rust.apk`(约 123 MiB,含全部声音资源与原生库)。脚本自动:
 - 写入 `mcassets.list` 解压清单(跳过点文件)
 - `aapt2 compile` 编译 `res/` 资源(启动图标)并链接
+- 附带 `libc++_shared.so`(oboe 音频库的 C++ 运行时,NDK r27+ 位于 toolchain sysroot)
 - aapt2 link + zipalign + apksigner 签名(复用系统 debug keystore)
 
 **4. 安装**
@@ -125,7 +127,10 @@ adb shell am start -n net.mc112rust.client/android.app.NativeActivity
   - swapchain 尺寸读取 ANativeWindow 真实值(而非 winit 报告值)
   - 容忍 `VK_SUBOPTIMAL_KHR`(Adreno 在非 IDENTITY transform 下每帧报告;重建会使帧循环降到 ~1 fps)
   - `pre_transform` 保持 IDENTITY 保证横屏内容方向
-- **资源引导**:`AssetBootstrap` 通过 AssetManager 按 `mcassets.list` 清单解压到内部存储,标记文件避免重复解压
+- **后台保活**:切后台时保留渲染器、winit 窗口与游戏会话,仅暂停绘制(表面随原生窗口销毁);回前台时重新获取 Vulkan surface + swapchain 直接恢复世界画面,失败则降级重建主菜单
+- **音频**:rodio → cpal → oboe(AAudio),与桌面共用同一播放后端(含 3D 衰减);ndk-context 由 android-activity 预初始化;APK 附带 `libc++_shared.so`
+- **触摸桥接**:触摸事件在游戏侧映射为键鼠语义(热键栏命中/长按计时),长按判定在 `about_to_wait`、触摸 Moved、触摸 Ended 三处触发,并保证 3 秒整点唤醒
+- **资源引导**:`AssetBootstrap` 通过 AssetManager 按 `mcassets.list` 清单解压到内部存储,标记文件避免重复解压(内容变更时升级标记版本触发重解压)
 - **Vulkan 加载**:ash 动态加载 `libvulkan.so`(非链接方式)
 - **日志**:android_logger 输出到 logcat(tag `mc112`),`adb logcat -s mc112:*`
 
@@ -146,14 +151,15 @@ python tools\one_click_import_assets.py --project-root . --minecraft-dir "%APPDA
 ```text
 .
 ├─ AndroidManifest.xml            # NativeActivity 清单(横屏)
+├─ res/mipmap/                    # 应用图标(打包时编译进资源表)
 ├─ tools/
-│  ├─ build_apk.py                # APK 打包脚本(aapt2/zipalign/apksigner)
+│  ├─ build_apk.py                # APK 打包脚本(aapt2/zipalign/apksigner,含 libc++_shared.so)
 │  ├─ spv-precompiler/            # SPIR-V 预编译工具(独立 crate)
 │  └─ winit-patched/              # winit 0.30.13 副本 + Android 鼠标补丁
 ├─ src/
 │  ├─ lib.rs                      # android_main 入口(cdylib 导出)
 │  └─ launcher/
-│     ├─ android.rs               # AndroidApp 全局、gameDir、沉浸请求
+│     ├─ android.rs               # AndroidApp 全局、gameDir、沉浸、指针捕获 JNI
 │     ├─ AssetBootstrap.rs        # 首启资源解压
 │     └─ AndroidLaunchConfig.rs   # launcher.json 解析
 └─ dist/                          # 打包产物(APK,gitignored)
