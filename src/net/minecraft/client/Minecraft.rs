@@ -5625,6 +5625,10 @@ struct MinecraftApplication {
     /// Button sent for the active touch (released on touch end).
     #[cfg(target_os = "android")]
     touchActiveButton: Option<MouseButton>,
+    /// Mirrors `Window::set_ime_allowed` (soft keyboard visibility) so the
+    /// IME follows the chat focus without toggling every frame.
+    #[cfg(target_os = "android")]
+    imeAllowed: bool,
     keyboardModifiers: ModifiersState,
     worldMouseGrabbed: bool,
     windowFocused: bool,
@@ -6123,6 +6127,8 @@ impl MinecraftApplication {
             touchLongPressFired: false,
             #[cfg(target_os = "android")]
             touchActiveButton: None,
+            #[cfg(target_os = "android")]
+            imeAllowed: false,
             windowFocused: true,
             suspended: false,
             debugFps: 0,
@@ -7846,6 +7852,21 @@ impl ApplicationHandler for MinecraftApplication {
     }
 
     fn about_to_wait(&mut self, eventLoop: &ActiveEventLoop) {
+        // Android: keep the soft keyboard (IME) open while the chat owns
+        // focus and hide it otherwise, following the chat screen.
+        #[cfg(target_os = "android")]
+        {
+            let chatOpen = self
+                .mainMenu
+                .as_ref()
+                .is_some_and(MainMenuRuntime::isChatOpen);
+            if chatOpen != self.imeAllowed {
+                if let Some(window) = self.window.as_ref() {
+                    window.set_ime_allowed(chatOpen);
+                }
+                self.imeAllowed = chatOpen;
+            }
+        }
         #[cfg(target_os = "android")]
         if self.touchPress.as_ref().is_some_and(|press| {
             !press.movedAway

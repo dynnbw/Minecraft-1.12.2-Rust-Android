@@ -18,6 +18,7 @@ use crate::error;
 use crate::error::EventLoopError;
 use crate::event::{self, Force, InnerSizeWriter, StartCause};
 use crate::event_loop::{self, ActiveEventLoop as RootAEL, ControlFlow, DeviceEvents};
+use crate::keyboard;
 use crate::platform::pump_events::PumpStatus;
 use crate::platform_impl::Fullscreen;
 use crate::window::{
@@ -143,6 +144,9 @@ pub struct EventLoop<T: 'static> {
     cause: StartCause,
     ignore_volume_keys: bool,
     combining_accent: Option<char>,
+    /// Last IME editor text (soft keyboard); diffed on TextEvent to replay
+    /// the change as ordinary key events.
+    last_ime_text: String,
     // Last reported absolute mouse position; used to synthesize relative
     // motion deltas for DeviceEvent::MouseMotion (mouse look support).
     last_mouse: Option<(f64, f64)>,
@@ -198,6 +202,7 @@ impl<T: 'static> EventLoop<T> {
             cause: StartCause::Init,
             ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
+            last_ime_text: String::new(),
             last_mouse: None,
             last_aux_button: None,
         })
@@ -663,6 +668,16 @@ impl<T: 'static> EventLoop<T> {
                     },
                 }
             },
+            InputEvent::TextEvent(state) => {
+                self.handle_text_event(state, callback);
+            },
+            InputEvent::TextAction(action) => {
+                // IME action buttons (Done/Send/Search/...) behave like Enter
+                // for the game's chat text field.
+                self.emit_key_event(callback, Keycode::Enter, None, event::ElementState::Pressed);
+                self.emit_key_event(callback, Keycode::Enter, None, event::ElementState::Released);
+                let _ = action;
+            },
             _ => {
                 warn!("Unknown android_activity input event {event:?}")
             },
@@ -671,6 +686,91 @@ impl<T: 'static> EventLoop<T> {
         input_status
     }
 
+    /// Soft-keyboard (IME) text update: android-activity reports the whole
+    /// current editor text on every change. Diff it against the previous
+    /// text and replay the difference as ordinary key events so the game's
+    /// existing chat text path (character + Backspace + Enter) consumes the
+    /// soft keyboard without any IME-specific handling.
+    fn handle_text_event<F>(
+        &mut self,
+        state: &android_activity::input::TextInputState,
+        callback: &mut F,
+    ) where
+        F: FnMut(event::Event<T>, &event_loop::ActiveEventLoop),
+    {
+        let new_text = &state.text;
+        if *new_text == self.last_ime_text {
+            return;
+        }
+        let last = self.last_ime_text.clone();
+        self.last_ime_text = new_text.clone();
+        // Common prefix/suffix around the edit point.
+        let prefix = last
+            .chars()
+            .zip(new_text.chars())
+            .take_while(|(left, right)| left == right)
+            .count();
+        let suffix = last
+            .chars()
+            .rev()
+            .zip(new_text.chars().rev())
+            .take_while(|(left, right)| left == right)
+            .count()
+            .min(last.chars().count() - prefix)
+            .min(new_text.chars().count() - prefix);
+        let last_chars = last.chars().collect::<Vec<_>>();
+        let new_chars = new_text.chars().collect::<Vec<_>>();
+        let removed = last_chars.len() - prefix - suffix;
+        let inserted = &new_chars[prefix..new_chars.len() - suffix];
+        // Backspaces for the removed characters, then the inserted text.
+        for _ in 0..removed {
+            self.emit_key_event(callback, Keycode::Back, None, event::ElementState::Pressed);
+            self.emit_key_event(callback, Keycode::Back, None, event::ElementState::Released);
+        }
+        for character in inserted {
+            self.emit_key_event(callback, Keycode::Unknown, Some(*character), event::ElementState::Pressed);
+            self.emit_key_event(callback, Keycode::Unknown, Some(*character), event::ElementState::Released);
+        }
+    }
+
+    fn emit_key_event<F>(
+        &self,
+        callback: &mut F,
+        keycode: Keycode,
+        character: Option<char>,
+        state: event::ElementState,
+    ) where
+        F: FnMut(event::Event<T>, &event_loop::ActiveEventLoop),
+    {
+        let logical_key = match character {
+            Some(character) => keyboard::Key::Character(smol_str::SmolStr::new(character.to_string())),
+            None => keycodes::to_logical(None, keycode),
+        };
+        let event = event::Event::WindowEvent {
+            window_id: window::WindowId(WindowId),
+            event: event::WindowEvent::KeyboardInput {
+                device_id: event::DeviceId(DeviceId(0)),
+                event: event::KeyEvent {
+                    state,
+                    physical_key: keycodes::to_physical_key(keycode),
+                    logical_key: logical_key.clone(),
+                    location: keycodes::to_location(keycode),
+                    repeat: false,
+                    text: if state == event::ElementState::Pressed {
+                        logical_key.to_text().map(smol_str::SmolStr::new)
+                    } else {
+                        None
+                    },
+                    platform_specific: KeyEventExtra {},
+                },
+                is_synthetic: false,
+            },
+        };
+        callback(event, self.window_target());
+    }
+}
+
+impl<T: 'static> EventLoop<T> {
     pub fn run<F>(mut self, event_handler: F) -> Result<(), EventLoopError>
     where
         F: FnMut(event::Event<T>, &event_loop::ActiveEventLoop),
