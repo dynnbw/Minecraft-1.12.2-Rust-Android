@@ -3974,6 +3974,15 @@ impl MainMenuRuntime {
             return Some(drawList);
         }
         if self.isModalWorldGuiOpen() {
+            // The end-credits screen has no Escape key on touch: draw the
+            // skip button (Escape mapping) as the only widget of the layer.
+            if self.worldGuiScreen.as_ref().is_some_and(|screen| {
+                matches!(screen, WorldGuiScreen::WinGame(_))
+            }) {
+                let mut drawList = GuiDrawList::new();
+                draw_button(&mut drawList, &layout.winGameSkip, false);
+                return Some(drawList);
+            }
             // Chat or a world GUI (pause menu, options) owns the frame.
             return None;
         }
@@ -6009,6 +6018,38 @@ impl MinecraftApplication {
                 if let Some(runtime) = self.mainMenu.as_mut().and_then(|m| m.touchRuntime.as_mut()) {
                     runtime.reset();
                 }
+                return true;
+            }
+            // The end-credits screen has no Escape key on touch: the skip
+            // button maps Escape and triggers the same PERFORM_RESPAWN as
+            // `GuiWinGame#keyTyped` (the modal guard stays open).
+            let winGameSkipHit = self
+                .mainMenu
+                .as_ref()
+                .is_some_and(|mainMenu| {
+                    mainMenu.worldGuiScreen.as_ref().is_some_and(|screen| {
+                        matches!(screen, WorldGuiScreen::WinGame(_))
+                    })
+                })
+                && self.mainMenu.as_mut().is_some_and(|mainMenu| {
+                    let runtime = mainMenu.touchRuntime.get_or_insert_with(TouchRuntime::new);
+                    hit_test(&runtime.layout().winGameSkip, position)
+                });
+            if winGameSkipHit {
+                match self.applyGuiAction(RuntimeGuiAction::RespawnPlayer) {
+                    Ok(true) => {
+                        eventLoop.exit();
+                        return true;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        *fatalError = Some(error.context("failed applying touch WinGame skip"));
+                    }
+                }
+                if let Some(runtime) = self.mainMenu.as_mut().and_then(|m| m.touchRuntime.as_mut()) {
+                    runtime.reset();
+                }
+                self.requestRedraw();
                 return true;
             }
         }

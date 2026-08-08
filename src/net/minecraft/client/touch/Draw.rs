@@ -29,7 +29,7 @@ pub fn rect_of(widget: &TouchWidget) -> (i32, i32, i32, i32) {
         TouchWidget::Jump { rect } | TouchWidget::Sneak { rect } | TouchWidget::Chat { rect }
         | TouchWidget::Pause { rect } | TouchWidget::Backpack { rect }
         | TouchWidget::Ascend { rect } | TouchWidget::Descend { rect }
-        | TouchWidget::BackpackClose { rect } => *rect,
+        | TouchWidget::BackpackClose { rect } | TouchWidget::WinGameSkip { rect } => *rect,
     }
 }
 
@@ -120,6 +120,8 @@ pub fn draw_button(drawList: &mut GuiDrawList, widget: &TouchWidget, active: boo
         TouchWidget::Descend { .. } => pick(active, DESCEND, DESCEND_ACTIVE),
         TouchWidget::Jump { .. } => return, // drawn by draw_jump (flying state)
         TouchWidget::BackpackClose { .. } => pick(active, CROSS, CROSS_ACTIVE),
+        // The credits skip maps the Escape key, so it reuses the ESC sprite.
+        TouchWidget::WinGameSkip { .. } => pick(active, ESC, ESC_ACTIVE),
     };
     draw_sprite(drawList, x, y, w, h, sprite);
 }

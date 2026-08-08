@@ -152,6 +152,8 @@ pub enum TouchWidget {
     Descend { rect: (i32, i32, i32, i32) },
     /// Backpack-close button inside the inventory GUI.
     BackpackClose { rect: (i32, i32, i32, i32) },
+    /// End-credits skip button (maps the Escape key; touch has no Esc).
+    WinGameSkip { rect: (i32, i32, i32, i32) },
 }
 
 pub fn hit_test(widget: &TouchWidget, position: (f64, f64)) -> bool {
@@ -159,7 +161,8 @@ pub fn hit_test(widget: &TouchWidget, position: (f64, f64)) -> bool {
         TouchWidget::Jump { rect } | TouchWidget::Sneak { rect }
         | TouchWidget::Chat { rect } | TouchWidget::Pause { rect }
         | TouchWidget::Backpack { rect } | TouchWidget::Ascend { rect }
-        | TouchWidget::Descend { rect } | TouchWidget::BackpackClose { rect } => {
+        | TouchWidget::Descend { rect } | TouchWidget::BackpackClose { rect }
+        | TouchWidget::WinGameSkip { rect } => {
             let (x, y, w, h) = *rect;
             position.0 >= x as f64 && position.0 < (x + w) as f64
                 && position.1 >= y as f64 && position.1 < (y + h) as f64
@@ -178,6 +181,8 @@ pub struct BedrockLayout {
     pub ascend: TouchWidget,
     pub descend: TouchWidget,
     pub backpackClose: TouchWidget,
+    /// End-credits skip button (Escape mapping), bottom-right.
+    pub winGameSkip: TouchWidget,
 }
 
 pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
@@ -212,6 +217,9 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
     // Backpack-close: right of the inventory GUI's top-right corner
     // (moved 48px right of its original in-GUI position), 20x20.
     let backpackClose = (width / 2 + 112, 44, 20, 20);
+    // End-credits skip: bottom-right, jump-sized so it is unmistakable; it
+    // is the only widget drawn while the credits screen owns the frame.
+    let winGameSkip = (width - 42 - 56, height - 68 - 56, 56, 56);
     BedrockLayout {
         dpad,
         jump: TouchWidget::Jump { rect: jumpRect },
@@ -222,6 +230,7 @@ pub fn bedrock_geometry(width: i32, height: i32) -> BedrockLayout {
         ascend: TouchWidget::Ascend { rect: ascend },
         descend: TouchWidget::Descend { rect: descend },
         backpackClose: TouchWidget::BackpackClose { rect: backpackClose },
+        winGameSkip: TouchWidget::WinGameSkip { rect: winGameSkip },
     }
 }
 
@@ -235,7 +244,8 @@ mod tests {
             TouchWidget::Jump { rect } | TouchWidget::Sneak { rect }
             | TouchWidget::Chat { rect } | TouchWidget::Pause { rect }
             | TouchWidget::Backpack { rect } | TouchWidget::Ascend { rect }
-            | TouchWidget::Descend { rect } | TouchWidget::BackpackClose { rect } => rect,
+            | TouchWidget::Descend { rect } | TouchWidget::BackpackClose { rect }
+            | TouchWidget::WinGameSkip { rect } => rect,
         }
     }
 
