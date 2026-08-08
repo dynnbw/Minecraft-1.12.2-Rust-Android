@@ -106,10 +106,15 @@ impl GuiWinGame {
     }
 
     /// `GuiWinGame#drawWinGameScreen`: the scrolling options-background with
-    /// the MCP fade-in color ramp.
+    /// the MCP fade-in color ramp. In-world GUI draw lists reach the world
+    /// atlas (`append_font_draw_list`), where quad UVs are linear into the
+    /// texture's atlas rectangle and never tile, unlike the standalone
+    /// GL_REPEAT sampling MCP 1.12.2 relies on. The backdrop is therefore
+    /// emitted as explicit 32-pixel tiles (the project's options-background
+    /// scale, matching `GuiScreen#drawWorldBackground`), each with [0,1] UVs,
+    /// and the scroll offset is folded into a single tile so the sampled
+    /// rectangle never leaves the texture.
     fn drawWinGameScreen(&self, drawList: &mut GuiDrawList) {
-        let f = -self.time * 0.5 * self.scrollSpeed;
-        let f1 = self.GuiScreen.height as f32 - self.time * 0.5 * self.scrollSpeed;
         let mut f3 = self.time * 0.02;
         let f4 =
             (self.totalScrollLength + self.GuiScreen.height * 2 + 24) as f32 / self.scrollSpeed;
@@ -123,18 +128,31 @@ impl GuiWinGame {
         let f3 = (f3 * f3 * 96.0 / 255.0).min(1.0);
         let grey = (f3 * 255.0).round() as u32;
         let color = 0xFF00_0000 | (grey << 16) | (grey << 8) | grey;
+        let tile = 32.0;
+        // MCP scrolls the background at half the text speed (`f` below).
+        // Grid rows shift upward by the modulus of that scroll, keeping each
+        // tile's UV in [0,1] while the pattern still scrolls continuously.
+        let delta = -(self.time * 0.5 * self.scrollSpeed).rem_euclid(tile);
         let width = self.GuiScreen.width as f32;
         let height = self.GuiScreen.height as f32;
-        let uv = 1.0 / 64.0;
-        drawList.push_textured_quad(
-            ResourceLocation::parse(OPTIONS_BACKGROUND),
-            [
-                (0.0, height, 0.0, f * uv, color),
-                (width, height, width * uv, f * uv, color),
-                (width, 0.0, width * uv, f1 * uv, color),
-                (0.0, 0.0, 0.0, f1 * uv, color),
-            ],
-        );
+        let texture = ResourceLocation::parse(OPTIONS_BACKGROUND);
+        let mut y = delta - tile;
+        while y < height + tile {
+            let mut x = 0.0;
+            while x < width {
+                drawList.push_textured_quad(
+                    texture.clone(),
+                    [
+                        (x, y, 0.0, 0.0, color),
+                        (x + tile, y, 1.0, 0.0, color),
+                        (x + tile, y + tile, 1.0, 1.0, color),
+                        (x, y + tile, 0.0, 1.0, color),
+                    ],
+                );
+                x += tile;
+            }
+            y += tile;
+        }
     }
 
     pub fn drawScreen(
