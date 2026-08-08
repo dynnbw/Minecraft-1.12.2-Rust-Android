@@ -43,6 +43,7 @@ use crate::net::minecraft::tileentity::TileEntityPiston::TileEntityPiston;
 use crate::net::minecraft::tileentity::TileEntityShulkerBox::TileEntityShulkerBox;
 use crate::net::minecraft::tileentity::TileEntitySign::TileEntitySign;
 use crate::net::minecraft::tileentity::TileEntitySkull::TileEntitySkull;
+use crate::net::minecraft::world::EnumDifficulty::EnumDifficulty;
 use crate::net::minecraft::world::EnumSkyBlock::EnumSkyBlock;
 use crate::net::minecraft::world::IBlockAccess::IBlockAccess;
 use crate::net::minecraft::world::biome::BiomeColorHelper::BiomeAccess;
@@ -81,6 +82,8 @@ pub struct WorldClient {
     lastLightningBolt: i32,
     /// WorldInfo spawn point from `NetHandlerPlayClient#handleSpawnPosition`.
     spawnPosition: Option<BlockPos>,
+    /// WorldInfo difficulty from `NetHandlerPlayClient#handleServerDifficulty`.
+    difficulty: EnumDifficulty,
     totalWorldTime: i64,
     worldTime: i64,
     doDaylightCycle: bool,
@@ -111,6 +114,7 @@ impl WorldClient {
             signTileEntities: HashMap::new(),
             lastLightningBolt: 0,
             spawnPosition: None,
+            difficulty: EnumDifficulty::Normal,
             totalWorldTime: 0,
             worldTime: 0,
             doDaylightCycle: true,
@@ -1099,6 +1103,13 @@ impl WorldClient {
     }
 
     pub fn getSpawnPosition(&self) -> Option<BlockPos> { self.spawnPosition }
+
+    /// `WorldInfo#setDifficulty` from `NetHandlerPlayClient#handleServerDifficulty`.
+    pub fn setDifficulty(&mut self, difficulty: EnumDifficulty) {
+        self.difficulty = difficulty;
+    }
+
+    pub fn getDifficulty(&self) -> EnumDifficulty { self.difficulty }
 
     pub fn flowerPotTileEntities(&self) -> impl Iterator<Item = &TileEntityFlowerPot> {
         self.flowerPotTileEntities.values()

@@ -99,6 +99,7 @@ use crate::net::minecraft::network::play::server::SPacketSignEditorOpen::SPacket
 use crate::net::minecraft::network::play::server::SPacketPlayerAbilities::SPacketPlayerAbilities;
 use crate::net::minecraft::network::play::server::SPacketChangeGameState::SPacketChangeGameState;
 use crate::net::minecraft::network::play::server::SPacketSpawnPosition::SPacketSpawnPosition;
+use crate::net::minecraft::network::play::server::SPacketServerDifficulty::SPacketServerDifficulty;
 use crate::net::minecraft::network::play::server::SPacketSetPassengers::SPacketSetPassengers;
 use crate::net::minecraft::network::play::server::SPacketMoveVehicle::SPacketMoveVehicle;
 use crate::net::minecraft::network::play::server::SPacketMaps::SPacketMaps;
@@ -1466,9 +1467,12 @@ fn try_start_using_held_item(
     {
         return false;
     }
+    // `EntityPlayer#canEat(alwaysEdible)` rejection: `(alwaysEdible ||
+    // needFood()) && !disableDamage`. The 1.12.2 capabilities enable
+    // disableDamage in creative and spectator, which blocks food use there.
     if stack.isFood()
-        && player.getFoodStats().getFoodLevel() >= 20
-        && !stack.isAlwaysEdible()
+        && (player.capabilities.disableDamage
+            || (player.getFoodStats().getFoodLevel() >= 20 && !stack.isAlwaysEdible()))
     {
         return false;
     }
@@ -1557,6 +1561,7 @@ impl NetHandlerPlayClient {
             0x0A => self.handleBlockAction(packet),
             0x0B => self.handleBlockChange(packet),
             0x0C => self.handleUpdateBossInfo(packet),
+            0x0D => self.handleServerDifficulty(packet),
             0x0E => self.handleTabComplete(packet),
             0x0F => self.handleChat(packet),
             0x10 => self.handleMultiBlockChange(packet),
@@ -3047,6 +3052,19 @@ impl NetHandlerPlayClient {
                 PlayHandlerEvent::WinGame
             });
         }
+        Ok(PlayHandlerEvent::None)
+    }
+
+    /// MCP `NetHandlerPlayClient#handleServerDifficulty`: stores the world
+    /// difficulty on the WorldInfo; the lock is not yet surfaced anywhere.
+    pub fn handleServerDifficulty(&mut self, rawPacket: &RawPacket) -> Result<PlayHandlerEvent, NetHandlerPlayClientError> {
+        let packet = SPacketServerDifficulty::readPacketData(rawPacket)
+            .map_err(|error| packet_error(rawPacket.id, error))?;
+        self.sharedState.update(|state| {
+            if let Some(world) = state.worldClient.as_mut() {
+                world.setDifficulty(packet.getDifficulty());
+            }
+        });
         Ok(PlayHandlerEvent::None)
     }
 
