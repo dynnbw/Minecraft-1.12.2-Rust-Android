@@ -1353,6 +1353,8 @@ struct EnchantmentTableRenderState {
 #[derive(Debug, Clone, Copy)]
 struct EndPortalRenderState {
     pos: BlockPos,
+    /// `TileEntityEndGateway` renders every face; the base portal only the top.
+    gateway: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -3232,8 +3234,11 @@ impl VulkanWorldRenderer {
         }).collect::<Vec<_>>();
 
         let endPortals = world.endPortalTileEntities().filter_map(|portal| {
-            (world.getBlockState(portal.pos).getBlockId() == 119)
-                .then_some(EndPortalRenderState { pos: portal.pos })
+            (matches!(world.getBlockState(portal.pos).getBlockId(), 119 | 209))
+                .then_some(EndPortalRenderState {
+                    pos: portal.pos,
+                    gateway: portal.is_gateway,
+                })
         }).collect::<Vec<_>>();
 
         let graphicsModeChanged = self
@@ -19566,62 +19571,91 @@ fn append_end_portal_tile_entity_meshes(
     for additivePass in [false, true] {
         for portal in portals {
             let x = portal.pos.x as f32;
-            let y = portal.pos.y as f32 + TileEntityEndPortalRenderer::SURFACE_HEIGHT;
+            let baseY = portal.pos.y as f32;
+            let surfaceY = baseY + TileEntityEndPortalRenderer::SURFACE_HEIGHT;
             let z = portal.pos.z as f32;
-            let dx = x - camera[0];
-            let dy = y - camera[1];
-            let dz = z - camera[2];
-            let distanceSquared = (dx * dx + dy * dy + dz * dz) as f64;
+            let (distanceSquared, frustumY0, frustumY1) = if portal.gateway {
+                // Gateway distance uses the block centre and the full box.
+                let dx = x + 0.5 - camera[0];
+                let dy = baseY + 0.5 - camera[1];
+                let dz = z + 0.5 - camera[2];
+                ((dx * dx + dy * dy + dz * dz) as f64, baseY as f64, baseY as f64 + 1.0)
+            } else {
+                let dx = x - camera[0];
+                let dy = surfaceY - camera[1];
+                let dz = z - camera[2];
+                (
+                    (dx * dx + dy * dy + dz * dz) as f64,
+                    surfaceY as f64 - 0.01,
+                    surfaceY as f64 + 0.01,
+                )
+            };
             if distanceSquared > 4_096.0
                 || !frustum.isBoxInFrustum(
                     x as f64,
-                    y as f64 - 0.01,
+                    frustumY0,
                     z as f64,
                     (x + 1.0) as f64,
-                    (y + 0.01) as f64,
+                    frustumY1,
                     (z + 1.0) as f64,
                 )
             {
                 continue;
             }
 
-            let positions = [
-                [x, y, z + 1.0],
-                [x + 1.0, y, z + 1.0],
-                [x + 1.0, y, z],
-                [x, y, z],
+            let topPositions = [
+                [x, surfaceY, z + 1.0],
+                [x + 1.0, surfaceY, z + 1.0],
+                [x + 1.0, surfaceY, z],
+                [x, surfaceY, z],
             ];
+            // Vertex order straight from TileEntityEndPortalRenderer, one quad
+            // per shouldRenderFace report: SOUTH, NORTH, EAST, WEST, DOWN,
+            // with the UP surface at 0.75 like the base portal.
+            let sidePositions = if portal.gateway {
+                vec![
+                    [[x, baseY, z + 1.0], [x + 1.0, baseY, z + 1.0], [x + 1.0, baseY + 1.0, z + 1.0], [x, baseY + 1.0, z + 1.0]],
+                    [[x, baseY + 1.0, z], [x + 1.0, baseY + 1.0, z], [x + 1.0, baseY, z], [x, baseY, z]],
+                    [[x + 1.0, baseY + 1.0, z], [x + 1.0, baseY + 1.0, z + 1.0], [x + 1.0, baseY, z + 1.0], [x + 1.0, baseY, z]],
+                    [[x, baseY, z], [x, baseY, z + 1.0], [x, baseY + 1.0, z + 1.0], [x, baseY + 1.0, z]],
+                    [[x, baseY, z], [x + 1.0, baseY, z], [x + 1.0, baseY, z + 1.0], [x, baseY, z + 1.0]],
+                ]
+            } else {
+                Vec::new()
+            };
+
             for layer in TileEntityEndPortalRenderer::layers(distanceSquared)
                 .into_iter()
                 .filter(|layer| layer.additive == additivePass)
             {
                 let rectangle = if layer.index == 0 { skyRectangle } else { portalRectangle };
-                let base = vertices.len() as u32;
-                for position in positions {
-                    let rawUv = end_portal_projective_uv(
-                        position,
-                        layer.index,
-                        systemTimeMillis,
-                        viewProjection,
-                    );
-                    let u = rawUv[0].rem_euclid(1.0);
-                    let v = rawUv[1].rem_euclid(1.0);
-                    vertices.push(WorldVertex {
-                        position,
-                        uv: [
-                            rectangle[0] + (rectangle[2] - rectangle[0]) * u,
-                            rectangle[1] + (rectangle[3] - rectangle[1]) * v,
-                        ],
-                        color: layer.color,
-                        // Lighting is disabled by TileEntityEndPortalRenderer;
-                        // the draw pass uses the unlit shader sentinel.
-                        lightmap: [15.0, 15.0],
-                    
-                        shaderEntity: [-1, -1, -1],
-                        shaderPadding: 0,
-                    });
+                for &face in sidePositions.iter().chain(std::iter::once(&topPositions)) {
+                    let base = vertices.len() as u32;
+                    for &position in &face {
+                        let rawUv = end_portal_projective_uv(
+                            position,
+                            layer.index,
+                            systemTimeMillis,
+                            viewProjection,
+                        );
+                        let u = rawUv[0].rem_euclid(1.0);
+                        let v = rawUv[1].rem_euclid(1.0);
+                        vertices.push(WorldVertex {
+                            position,
+                            uv: [
+                                rectangle[0] + (rectangle[2] - rectangle[0]) * u,
+                                rectangle[1] + (rectangle[3] - rectangle[1]) * v,
+                            ],
+                            color: layer.color,
+                            // Lighting is disabled by TileEntityEndPortalRenderer;
+                            // the draw pass uses the unlit shader sentinel.
+                            lightmap: [15.0, 15.0],
+                            shaderEntity: [-1, -1, -1],
+                            shaderPadding: 0,
+                        });
+                    }
+                    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
                 }
-                indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
             }
         }
         if !additivePass {

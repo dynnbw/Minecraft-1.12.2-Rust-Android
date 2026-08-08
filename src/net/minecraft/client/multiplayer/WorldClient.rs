@@ -79,6 +79,8 @@ pub struct WorldClient {
     shulkerBoxTileEntities: HashMap<BlockPos, TileEntityShulkerBox>,
     signTileEntities: HashMap<BlockPos, TileEntitySign>,
     lastLightningBolt: i32,
+    /// WorldInfo spawn point from `NetHandlerPlayClient#handleSpawnPosition`.
+    spawnPosition: Option<BlockPos>,
     totalWorldTime: i64,
     worldTime: i64,
     doDaylightCycle: bool,
@@ -108,6 +110,7 @@ impl WorldClient {
             shulkerBoxTileEntities: HashMap::new(),
             signTileEntities: HashMap::new(),
             lastLightningBolt: 0,
+            spawnPosition: None,
             totalWorldTime: 0,
             worldTime: 0,
             doDaylightCycle: true,
@@ -1089,6 +1092,14 @@ impl WorldClient {
         self.endPortalTileEntities.values()
     }
 
+    /// `WorldInfo.setSpawn` from `NetHandlerPlayClient#handleSpawnPosition`.
+    pub fn setSpawnPosition(&mut self, pos: BlockPos) {
+        self.spawnPosition = Some(pos);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub fn getSpawnPosition(&self) -> Option<BlockPos> { self.spawnPosition }
+
     pub fn flowerPotTileEntities(&self) -> impl Iterator<Item = &TileEntityFlowerPot> {
         self.flowerPotTileEntities.values()
     }
@@ -1160,7 +1171,11 @@ impl WorldClient {
                     true
                 } else { false }
             }
-            "minecraft:end_portal" | "Airportal" if blockId == 119 => {
+            // `TileEntityEndGateway` extends `TileEntityEndPortal`; both share
+            // the portal tile renderer. The NBT id picks the render faces.
+            "minecraft:end_portal" | "Airportal" | "minecraft:end_gateway"
+                if matches!(blockId, 119 | 209) =>
+            {
                 if let Some(tile) = TileEntityEndPortal::fromNbt(tag) {
                     self.endPortalTileEntities.insert(pos, tile);
                     true
@@ -1382,10 +1397,14 @@ impl WorldClient {
         } else {
             self.enchantmentTableTileEntities.remove(&pos);
         }
-        if block_id == 119 {
+        if matches!(block_id, 119 | 209) {
             self.endPortalTileEntities
                 .entry(pos)
-                .or_insert_with(|| TileEntityEndPortal::new(pos));
+                .or_insert_with(|| if block_id == 209 {
+                    TileEntityEndPortal::new_gateway(pos)
+                } else {
+                    TileEntityEndPortal::new(pos)
+                });
         } else {
             self.endPortalTileEntities.remove(&pos);
         }

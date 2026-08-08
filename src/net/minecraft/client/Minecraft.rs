@@ -58,6 +58,7 @@ use crate::net::minecraft::client::gui::GuiTextField::{GuiTextField, GuiTextFiel
 use crate::net::minecraft::client::gui::GuiChat::GuiChat;
 use crate::net::minecraft::client::gui::GuiIngameMenu::{GuiIngameMenu, GuiIngameMenuAction};
 use crate::net::minecraft::client::gui::GuiGameOver::{GuiGameOver, GuiGameOverAction};
+use crate::net::minecraft::client::gui::GuiWinGame::GuiWinGame;
 use crate::net::minecraft::client::gui::GuiNewChat::GuiNewChat;
 use crate::net::minecraft::client::gui::GuiYesNo::GuiYesNo;
 use crate::net::minecraft::client::multiplayer::GuiConnecting::{GuiConnecting, GuiConnectingAction, GuiConnectingEvent};
@@ -378,6 +379,8 @@ enum WorldGuiScreen {
         parent: Box<GuiGameOver>,
         screen: GuiYesNo,
     },
+    /// MCP `GuiWinGame`: the end-credits scroll after conquering the End.
+    WinGame(GuiWinGame),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -450,6 +453,10 @@ enum RuntimeGuiAction {
     FinishSignEditor,
     OpenGameOver(crate::net::minecraft::util::text::ITextComponent::ITextComponent),
     RespawnPlayer,
+    /// `SPacketChangeGameState(4, 1)`: open the end-credits screen.
+    OpenWinGame,
+    /// `SPacketChangeGameState(4, 0)`: respawn and redownload terrain.
+    AutoRespawn,
     OpenDeathQuitConfirm,
     ConfirmDeathQuit(bool),
     LeaveWorldToMainMenu,
@@ -896,6 +903,15 @@ impl MainMenuRuntime {
             Some(WorldGuiScreen::GameOverConfirm { screen, .. }) => {
                 screen.initGui(width, height, &self.fontRendererObj);
             }
+            Some(WorldGuiScreen::WinGame(screen)) => {
+                screen.initGui(
+                    width,
+                    height,
+                    &minecraft.resourceManager,
+                    minecraft.session.getProfile().getName(),
+                    &mut self.fontRendererObj,
+                );
+            }
             None => {}
         }
     }
@@ -1095,6 +1111,23 @@ impl MainMenuRuntime {
             &self.locale,
         );
         self.worldGuiScreen = Some(WorldGuiScreen::GameOver(screen));
+        self.clearMovementKeys();
+        self.pendingWorldMouseFocus = Some(false);
+    }
+
+    /// `Minecraft#displayGuiScreen(new GuiWinGame(true, ...))` from
+    /// `NetHandlerPlayClient#handleChangeGameState` game state 4 value 1.
+    fn openWinGame(&mut self, minecraft: &Minecraft) {
+        if !self.isWorld() { return; }
+        let mut screen = GuiWinGame::new(true);
+        screen.initGui(
+            self.scaledResolution.scaled_width(),
+            self.scaledResolution.scaled_height(),
+            &minecraft.resourceManager,
+            minecraft.session.getProfile().getName(),
+            &mut self.fontRendererObj,
+        );
+        self.worldGuiScreen = Some(WorldGuiScreen::WinGame(screen));
         self.clearMovementKeys();
         self.pendingWorldMouseFocus = Some(false);
     }
@@ -4112,6 +4145,9 @@ impl MainMenuRuntime {
                     WorldGuiScreen::GameOverConfirm { screen, .. } => screen.drawScreenInWorld(
                         &mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks,
                     ),
+                    WorldGuiScreen::WinGame(screen) => screen.drawScreen(
+                        &mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks,
+                    ),
                 }
                 drawList
             });
@@ -4454,7 +4490,9 @@ impl MainMenuRuntime {
                         | GuiConnectingEvent::LoginSuccess(_)
                         | GuiConnectingEvent::TerrainReady
                         | GuiConnectingEvent::Respawn { .. }
-                        | GuiConnectingEvent::PlayerDied(_) => {}
+                        | GuiConnectingEvent::PlayerDied(_)
+                        | GuiConnectingEvent::WinGame
+                        | GuiConnectingEvent::AutoRespawn => {}
                         GuiConnectingEvent::WorldEffect { effectType, position, data, serverWide } => {
                             pendingWorldEffects.push((effectType, position, data, serverWide));
                         }
@@ -4496,6 +4534,14 @@ impl MainMenuRuntime {
                         GuiConnectingEvent::Failed { reasonKey, message } => { action = Some(RuntimeGuiAction::OpenDisconnected { reasonKey, message }); break; }
                         GuiConnectingEvent::Cancelled => { action = Some(RuntimeGuiAction::ReturnToMultiplayer { lastServer: None }); break; }
                         GuiConnectingEvent::Respawn { dimensionChanged: true, .. } => { action = Some(RuntimeGuiAction::OpenDownloadTerrain); break; }
+                        GuiConnectingEvent::WinGame => {
+                            action = Some(RuntimeGuiAction::OpenWinGame);
+                            break;
+                        }
+                        GuiConnectingEvent::AutoRespawn => {
+                            action = Some(RuntimeGuiAction::AutoRespawn);
+                            break;
+                        }
                         GuiConnectingEvent::PlayerDied(message) => {
                             action = Some(RuntimeGuiAction::OpenGameOver(message));
                             break;
@@ -4517,6 +4563,13 @@ impl MainMenuRuntime {
                         Some(WorldGuiScreen::EditSign(screen)) => screen.updateScreen(),
                         Some(WorldGuiScreen::GameOver(screen)) => screen.updateScreen(),
                         Some(WorldGuiScreen::GameOverConfirm { screen, .. }) => screen.updateScreen(),
+                        // `GuiWinGame#updateScreen` finishes the credits
+                        // scroll: its Runnable sends PERFORM_RESPAWN.
+                        Some(WorldGuiScreen::WinGame(screen)) => {
+                            if screen.updateScreen() {
+                                action = Some(RuntimeGuiAction::RespawnPlayer);
+                            }
+                        }
                         _ => {}
                     }
                     // Keep the edited text mirrored into the live tile entity after
@@ -4928,6 +4981,8 @@ impl MainMenuRuntime {
                         playGuiSound(soundHandler, Some(&interaction.sound));
                         RuntimeGuiAction::ConfirmDeathQuit(interaction.result)
                     }),
+                // `GuiWinGame` has no buttons.
+                Some(WorldGuiScreen::WinGame(_)) => None,
                 None => None,
             };
         }
@@ -6943,6 +6998,19 @@ impl MinecraftApplication {
                 self.mainMenu.as_mut().expect("GUI runtime").openGameOver(message);
                 self.setWorldMouseGrabbed(false);
             }
+            RuntimeGuiAction::OpenWinGame => {
+                let minecraft = self.minecraft.as_ref().expect("Minecraft state");
+                self.mainMenu.as_mut().expect("GUI runtime").openWinGame(minecraft);
+                self.setWorldMouseGrabbed(false);
+            }
+            RuntimeGuiAction::AutoRespawn => {
+                let minecraft = self.minecraft.as_ref().expect("Minecraft state");
+                let result = self.mainMenu.as_mut().expect("GUI runtime").respawnPlayer();
+                if let Err(message) = result {
+                    log::error!("failed sending CPacketClientStatus(PERFORM_RESPAWN): {message}");
+                }
+                self.mainMenu.as_mut().expect("GUI runtime").openDownloadTerrain(minecraft);
+            }
             RuntimeGuiAction::RespawnPlayer => {
                 let result = self.mainMenu.as_mut().expect("GUI runtime").respawnPlayer();
                 if let Err(message) = result {
@@ -7676,6 +7744,8 @@ impl ApplicationHandler for MinecraftApplication {
                             Some(WorldGuiScreen::EditSign(_)) => RuntimeGuiAction::FinishSignEditor,
                             Some(WorldGuiScreen::GameOver(_))
                             | Some(WorldGuiScreen::GameOverConfirm { .. }) => RuntimeGuiAction::None,
+                            // `GuiWinGame#keyTyped` keyCode 1: skip the credits.
+                            Some(WorldGuiScreen::WinGame(_)) => RuntimeGuiAction::RespawnPlayer,
                             None => RuntimeGuiAction::OpenIngameMenu,
                         };
                         handled = true;

@@ -98,6 +98,7 @@ use crate::net::minecraft::network::play::server::SPacketSetExperience::SPacketS
 use crate::net::minecraft::network::play::server::SPacketSignEditorOpen::SPacketSignEditorOpen;
 use crate::net::minecraft::network::play::server::SPacketPlayerAbilities::SPacketPlayerAbilities;
 use crate::net::minecraft::network::play::server::SPacketChangeGameState::SPacketChangeGameState;
+use crate::net::minecraft::network::play::server::SPacketSpawnPosition::SPacketSpawnPosition;
 use crate::net::minecraft::network::play::server::SPacketSetPassengers::SPacketSetPassengers;
 use crate::net::minecraft::network::play::server::SPacketMoveVehicle::SPacketMoveVehicle;
 use crate::net::minecraft::network::play::server::SPacketMaps::SPacketMaps;
@@ -1207,6 +1208,11 @@ pub enum PlayHandlerEvent {
     None,
     JoinGame(SPacketJoinGame),
     Respawn { dimension: i32, dimensionChanged: bool },
+    /// `SPacketChangeGameState(4, 1)`: the end-credits `GuiWinGame` opens and
+    /// sends `CPacketClientStatus(PERFORM_RESPAWN)` when it finishes.
+    WinGame,
+    /// `SPacketChangeGameState(4, 0)`: already-seen credits, respawn directly.
+    AutoRespawn,
     TerrainReady,
     PlayerDied { message: ITextComponent },
     Sound {
@@ -1598,6 +1604,7 @@ impl NetHandlerPlayClient {
             0x43 => self.handleSetPassengers(packet),
             0x44 => self.handleTeams(packet),
             0x45 => self.handleUpdateScore(packet),
+            0x46 => self.handleSpawnPosition(packet),
             0x47 => self.handleTimeUpdate(packet),
             0x48 => self.handleTitle(packet),
             0x49 => self.handleSoundEffect(packet),
@@ -3029,7 +3036,34 @@ impl NetHandlerPlayClient {
                     gameType.configurePlayerCapabilities(&mut player.capabilities);
                 }
             });
+        } else if packet.getGameState() == 4 {
+            // MCP `NetHandlerPlayClient#handleChangeGameState` game state 4:
+            // `EntityPlayerMP` announces the end-credits on leaving the End.
+            // Value 0 (credits already seen) respawns immediately, value 1
+            // opens `GuiWinGame`, whose Runnable sends PERFORM_RESPAWN.
+            return Ok(if (packet.getValue() + 0.5).floor() as i32 == 0 {
+                PlayHandlerEvent::AutoRespawn
+            } else {
+                PlayHandlerEvent::WinGame
+            });
         }
+        Ok(PlayHandlerEvent::None)
+    }
+
+    pub fn handleSpawnPosition(&mut self, rawPacket: &RawPacket) -> Result<PlayHandlerEvent, NetHandlerPlayClientError> {
+        let packet = SPacketSpawnPosition::readPacketData(rawPacket)
+            .map_err(|error| packet_error(rawPacket.id, error))?;
+        let spawnPos = packet.getSpawnPos();
+        self.sharedState.update(|state| {
+            // MCP `handleSpawnPosition`: set the bed-respawn point and the
+            // world-info spawn (compass target).
+            if let Some(player) = state.thePlayer.as_mut() {
+                player.setSpawnPoint(Some(spawnPos), true);
+            }
+            if let Some(world) = state.worldClient.as_mut() {
+                world.setSpawnPosition(spawnPos);
+            }
+        });
         Ok(PlayHandlerEvent::None)
     }
 

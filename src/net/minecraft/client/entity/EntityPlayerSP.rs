@@ -104,6 +104,10 @@ pub struct EntityPlayerSP {
     pub permissionLevel: i32,
     /// MCP `EntityPlayer.hasReducedDebug`, synchronized by status 22/23.
     pub hasReducedDebug: bool,
+    /// MCP `EntityPlayer.spawnPoint` + `spawnForced`, set by
+    /// `NetHandlerPlayClient#handleSpawnPosition`.
+    pub spawnPoint: Option<BlockPos>,
+    pub spawnForced: bool,
     pub swingProgress: f32,
     pub prevSwingProgress: f32,
     /// MCP `EntityLivingBase.limbSwing`: accumulated walk-cycle phase.
@@ -237,6 +241,8 @@ impl EntityPlayerSP {
             lastStatusOpcode: None,
             permissionLevel: 0,
             hasReducedDebug: false,
+            spawnPoint: None,
+            spawnForced: false,
             swingProgress: 0.0,
             prevSwingProgress: 0.0,
             limbSwing: 0.0,
@@ -1510,6 +1516,17 @@ impl EntityPlayerSP {
         world.queueParticleSpawns(emitter.onUpdate(&self.entity));
         if emitter.isExpired() {
             self.totemParticleEmitter = None;
+        }
+    }
+
+    /// MCP `EntityPlayer#setSpawnPoint`.
+    pub fn setSpawnPoint(&mut self, pos: Option<BlockPos>, forced: bool) {
+        if let Some(pos) = pos {
+            self.spawnPoint = Some(pos);
+            self.spawnForced = forced;
+        } else {
+            self.spawnPoint = None;
+            self.spawnForced = false;
         }
     }
 

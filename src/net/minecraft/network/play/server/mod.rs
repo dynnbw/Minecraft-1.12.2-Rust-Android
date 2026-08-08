@@ -61,6 +61,7 @@
 #[path = "SPacketUpdateTileEntity.rs"] pub mod SPacketUpdateTileEntity;
 
 #[path = "SPacketEntityProperties.rs"] pub mod SPacketEntityProperties;
+#[path = "SPacketSpawnPosition.rs"] pub mod SPacketSpawnPosition;
 #[path = "SPacketEntityEffect.rs"] pub mod SPacketEntityEffect;
 
 #[path = "SPacketUseBed.rs"] pub mod SPacketUseBed;

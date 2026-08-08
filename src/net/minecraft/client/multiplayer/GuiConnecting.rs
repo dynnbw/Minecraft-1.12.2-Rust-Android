@@ -42,6 +42,10 @@ pub enum GuiConnectingEvent {
     LoginSuccess(GameProfile),
     JoinGame(SPacketJoinGame),
     Respawn { dimension: i32, dimensionChanged: bool },
+    /// `SPacketChangeGameState(4, 1)`: open the end-credits `GuiWinGame`.
+    WinGame,
+    /// `SPacketChangeGameState(4, 0)`: already-seen credits, respawn directly.
+    AutoRespawn,
     TerrainReady,
     PlayerDied(ITextComponent),
     Sound {
@@ -178,6 +182,7 @@ impl GuiConnecting {
                 | GuiConnectingEvent::Failed { .. }
                 | GuiConnectingEvent::Cancelled => true,
                 GuiConnectingEvent::Respawn { dimensionChanged, .. } => *dimensionChanged,
+                GuiConnectingEvent::WinGame | GuiConnectingEvent::AutoRespawn => true,
                 _ => false,
             };
             match &event {
@@ -188,7 +193,9 @@ impl GuiConnecting {
                 GuiConnectingEvent::Respawn { .. }
                 | GuiConnectingEvent::PlayerDied(_)
                 | GuiConnectingEvent::Sound { .. }
-                | GuiConnectingEvent::WorldEffect { .. } => {},
+                | GuiConnectingEvent::WorldEffect { .. }
+                | GuiConnectingEvent::WinGame
+                | GuiConnectingEvent::AutoRespawn => {},
                 GuiConnectingEvent::JoinGame(_)
                 | GuiConnectingEvent::Disconnected(_)
                 | GuiConnectingEvent::Failed { .. }
@@ -435,6 +442,12 @@ fn spawn_connector(
                         }
                         Ok(PlayHandlerEvent::PlayerDied { message }) => {
                             let _ = sender.send(GuiConnectingEvent::PlayerDied(message));
+                        }
+                        Ok(PlayHandlerEvent::WinGame) => {
+                            let _ = sender.send(GuiConnectingEvent::WinGame);
+                        }
+                        Ok(PlayHandlerEvent::AutoRespawn) => {
+                            let _ = sender.send(GuiConnectingEvent::AutoRespawn);
                         }
                         Ok(PlayHandlerEvent::Sound { sound, category, x, y, z, volume, pitch }) => {
                             let _ = sender.send(GuiConnectingEvent::Sound {
