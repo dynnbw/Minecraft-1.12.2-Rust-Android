@@ -92,3 +92,7 @@ shaderc = "=0.8.3"
 # CursorMoved and MouseWheel so physical mice work on Android.
 [patch.crates-io]
 winit = { path = "tools/winit-patched" }
+# ndk-context 0.1.1 aborts when activity recreation re-runs onCreate in a
+# live process (observed on Android 15); the patched copy keeps the newest
+# context instead.
+ndk-context = { path = "tools/ndk-context-patched" }

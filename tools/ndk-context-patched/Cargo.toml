@@ -1,0 +1,6 @@
+[package]
+name = "ndk-context"
+version = "0.1.1"
+edition = "2018"
+description = "Patched copy of ndk-context 0.1.1: idempotent initialize_android_context"
+license = "MIT OR Apache-2.0"
