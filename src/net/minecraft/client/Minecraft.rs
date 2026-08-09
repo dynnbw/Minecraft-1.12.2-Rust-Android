@@ -3221,9 +3221,16 @@ impl MainMenuRuntime {
             } else if !pressed {
                 (Vec::new(), false, false, None, None, None, None, None)
             } else {
-                shared.withRead(|state| {
+                // Mutable: the ported item predictions (bucket fill, throwable
+                // shrink) mutate the local inventory and world, matching the
+                // source client's synchronous `Item#onItemRightClick` side
+                // effects. The server remains authoritative over both.
+                shared.withWrite(|state| {
                     self.playerController.setGameType(state.gameType);
-                    let (Some(world), Some(player)) = (&state.worldClient, &state.thePlayer) else {
+                    let (Some(world), Some(player)) = (
+                        state.worldClient.as_mut(),
+                        state.thePlayer.as_mut(),
+                    ) else {
                         return (Vec::new(), false, false, None, None, None, None, None);
                     };
                     let reach = self.playerController.getBlockReachDistance();
@@ -3330,7 +3337,7 @@ impl MainMenuRuntime {
                             // MAIN_HAND first, then OFF_HAND. PASS/FAIL continue; SUCCESS
                             // owns the click and terminates the loop.
                             for hand in [EnumHand::MainHand, EnumHand::OffHand] {
-                                let stack = player.getHeldItem(hand);
+                                let stack = player.getHeldItem(hand).clone();
 
                                 if let Some(hit) = blockResult {
                                     if !world.getBlockState(hit.getBlockPos()).isAir() {
@@ -3344,6 +3351,17 @@ impl MainMenuRuntime {
                                         let predictedBlockState = result.predictedBlockState;
                                         if let Some(packet) = result.packet {
                                             packets.push(packet);
+                                        }
+                                        // Local item-use sound (e.g. hoe till),
+                                        // matching the remote branch of the
+                                        // source `Item#onItemUse`.
+                                        if let Some((name, volume, pitch)) = result.sound {
+                                            player.queueSoundAtPlayer(
+                                                name,
+                                                SoundCategory::Blocks,
+                                                volume,
+                                                pitch,
+                                            );
                                         }
                                         if result.result == EnumActionResult::Success {
                                             packets.push(CPacketAnimation::new(hand).writePacketData());
@@ -3375,16 +3393,163 @@ impl MainMenuRuntime {
 
                                 // `PlayerControllerMP#processRightClick` always sends the
                                 // hand packet before evaluating Item#useItemRightClick.
-                                packets.push(self.playerController.processRightClick(hand));
+                                let airResult =
+                                    self.playerController.processRightClick(world, player, hand);
+                                packets.push(airResult.packet);
+
+                                // Apply the client-side item predictions: bucket
+                                // fill swaps the held stack and removes the source
+                                // liquid; throwables shrink and play their sound.
+                                // The server is authoritative and overwrites both.
+                                let mut airConsumed = false;
+                                if let Some(fill) = airResult.fillBucket {
+                                    // MCP `ItemBucket#fillBucket`: creative
+                                    // keeps the empty bucket; survival either
+                                    // swaps the hand to the filled bucket when
+                                    // the stack runs out, or keeps one empty
+                                    // bucket and stows a filled one in the
+                                    // first free slot.
+                                    if !player.capabilities.isCreativeMode {
+                                        let heldIndex = if hand == EnumHand::MainHand {
+                                            player.inventory.currentItem as i32
+                                        } else {
+                                            40
+                                        };
+                                        let filled = ItemStack {
+                                            itemId: fill.bucket,
+                                            count: 1,
+                                            itemDamage: 0,
+                                            tagCompound: None,
+                                        };
+                                        let held = player
+                                            .inventory
+                                            .getStackInSlot(heldIndex)
+                                            .cloned()
+                                            .unwrap_or(ItemStack::EMPTY);
+                                        if held.count - 1 <= 0 {
+                                            let _ = player
+                                                .inventory
+                                                .setInventorySlotContents(heldIndex, filled);
+                                        } else {
+                                            let mut remaining = held.clone();
+                                            remaining.shrink(1);
+                                            let _ = player
+                                                .inventory
+                                                .setInventorySlotContents(heldIndex, remaining);
+                                            // `InventoryPlayer#addItemStackToInventory`
+                                            // for a max-stack-1 bucket: first free slot.
+                                            if let Some(emptySlot) = (0..player.inventory.mainInventory.len())
+                                                .find(|slot| player.inventory.mainInventory[*slot].isEmpty())
+                                            {
+                                                let _ = player
+                                                    .inventory
+                                                    .setInventorySlotContents(emptySlot as i32, filled);
+                                            }
+                                        }
+                                    }
+                                    // Sound and source removal run in every
+                                    // mode, matching the remote branch order.
+                                    let _ = world.invalidateRegionAndSetBlock(
+                                        fill.source,
+                                        crate::net::minecraft::block::state::IBlockState::IBlockState::default(),
+                                    );
+                                    player.queueSoundAtPlayer(
+                                        fill.sound,
+                                        SoundCategory::Players,
+                                        1.0,
+                                        1.0,
+                                    );
+                                    airConsumed = true;
+                                }
+                                if let Some(empty) = airResult.emptyBucket {
+                                    // `ItemBucket#onItemRightClick` full-bucket
+                                    // branch: survival swaps the hand to the
+                                    // empty bucket; creative keeps the full one.
+                                    // The empty sound plays at the destination
+                                    // block in every mode (`tryPlaceContainedLiquid`
+                                    // plays it with SoundCategory.BLOCKS, 1.0/1.0).
+                                    if !player.capabilities.isCreativeMode {
+                                        let heldIndex = if hand == EnumHand::MainHand {
+                                            player.inventory.currentItem as i32
+                                        } else {
+                                            40
+                                        };
+                                        let _ = player.inventory.setInventorySlotContents(
+                                            heldIndex,
+                                            ItemStack {
+                                                itemId: crate::net::minecraft::item::ItemBucket::BUCKET,
+                                                count: 1,
+                                                itemDamage: 0,
+                                                tagCompound: None,
+                                            },
+                                        );
+                                    }
+                                    player.queueSoundAt(
+                                        empty.sound,
+                                        SoundCategory::Blocks,
+                                        [
+                                            empty.destination.x as f32 + 0.5,
+                                            empty.destination.y as f32 + 0.5,
+                                            empty.destination.z as f32 + 0.5,
+                                        ],
+                                        1.0,
+                                        1.0,
+                                    );
+                                    airConsumed = true;
+                                }
+                                if let Some(thrown) = airResult.thrown {
+                                    // `ItemSnowball/ItemEgg/ItemEnderPearl
+                                    // #onItemRightClick`: creative players do
+                                    // not consume.
+                                    if !player.capabilities.isCreativeMode {
+                                        let heldIndex = if hand == EnumHand::MainHand {
+                                            player.inventory.currentItem as i32
+                                        } else {
+                                            40
+                                        };
+                                        let mut stack = player
+                                            .inventory
+                                            .getStackInSlot(heldIndex)
+                                            .cloned()
+                                            .unwrap_or(ItemStack::EMPTY);
+                                        stack.shrink(1);
+                                        let _ = player
+                                            .inventory
+                                            .setInventorySlotContents(heldIndex, stack);
+                                    }
+                                    player.queueSoundAtPlayer(
+                                        thrown.sound,
+                                        thrown.category,
+                                        0.5,
+                                        thrown.pitch,
+                                    );
+                                    airConsumed = true;
+                                }
+                                if airConsumed {
+                                    return (
+                                        packets,
+                                        false,
+                                        false,
+                                        None,
+                                        Some(hand),
+                                        Some(hand),
+                                        None,
+                                        None,
+                                    );
+                                }
 
                                 // The currently ported source-backed SUCCESS path consists
                                 // of items with a timed use action (eat/drink, bow, shield).
                                 // Ordinary items remain PASS so the off hand can be tried.
+                                // Food is gated by `ItemFood#onItemRightClick` ->
+                                // `EntityPlayer#canEat(alwaysEdible)`: `(alwaysEdible ||
+                                // needFood()) && !disableDamage`.
                                 let canStart = stack.getItemUseAction()
                                     != crate::net::minecraft::item::EnumAction::EnumAction::None
                                     && (!stack.isFood()
-                                        || player.getFoodStats().getFoodLevel() < 20
-                                        || stack.isAlwaysEdible())
+                                        || ((player.getFoodStats().getFoodLevel() < 20
+                                            || stack.isAlwaysEdible())
+                                            && !player.capabilities.disableDamage))
                                     && (stack.itemId != 261
                                         || state.gameType == GameType::Creative
                                         || player
