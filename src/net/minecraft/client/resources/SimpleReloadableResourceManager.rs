@@ -122,6 +122,38 @@ impl ResourceManager {
         Ok(())
     }
 
+    /// Reads the `{name}.mcmeta` metadata file from the root of every pack,
+    /// in pack order (MCP `IResourcePack#getPackMetadata`, e.g. name "pack"
+    /// reads `pack.mcmeta`). Packs without the file are skipped.
+    pub fn read_pack_metadatas(&self, name: &str) -> Vec<Vec<u8>> {
+        let mut sections = Vec::new();
+        for pack in &self.packs {
+            match &pack.pack {
+                ResourcePackSource::Directory(directory) => {
+                    // FolderResourcePack stores `<pack>/assets` as its namespace
+                    // root, while IResourcePack#getPackMetadata reads the root
+                    // `<pack>/{name}.mcmeta`. Runtime default assets may not have
+                    // a parent metadata file; LanguageManager supplies the
+                    // canonical en_us DefaultResourcePack fallback in that case.
+                    let file = format!("{name}.mcmeta");
+                    let path = directory.assets_root().parent()
+                        .map(|root| root.join(&file))
+                        .filter(|candidate| candidate.is_file())
+                        .unwrap_or_else(|| directory.assets_root().join(&file));
+                    if path.is_file() {
+                        if let Ok(bytes) = fs::read(path) { sections.push(bytes); }
+                    }
+                }
+                ResourcePackSource::Zip(zip) => {
+                    if let Ok(bytes) = zip.read_name(&format!("{name}.mcmeta")) {
+                        sections.push(bytes);
+                    }
+                }
+            }
+        }
+        sections
+    }
+
     pub fn pack_count(&self) -> usize { self.packs.len() }
 
     pub fn pack_names(&self) -> Vec<&str> {
@@ -248,7 +280,10 @@ mod tests {
         let resource = manager.get_resource(&ResourceLocation::new("minecraft", "test/value.txt")).unwrap();
         assert_eq!(resource.bytes, b"overlay");
         let all = manager.get_all_resources(&ResourceLocation::new("minecraft", "test/value.txt")).unwrap();
-        assert_eq!(all.iter().map(|resource| resource.bytes.as_slice()).collect::<Vec<_>>(), vec![b"base", b"overlay"]);
+        assert_eq!(
+            all.iter().map(|resource| resource.bytes.as_slice()).collect::<Vec<_>>(),
+            vec![b"base".as_slice(), b"overlay".as_slice()]
+        );
         let _ = fs::remove_dir_all(base);
         let _ = fs::remove_dir_all(overlay);
     }

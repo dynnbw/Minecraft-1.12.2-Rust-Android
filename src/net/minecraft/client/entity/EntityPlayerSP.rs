@@ -19,10 +19,12 @@ use crate::net::minecraft::entity::EntityLivingBase;
 use crate::net::minecraft::entity::player::InventoryPlayer::InventoryPlayer;
 use crate::net::minecraft::entity::player::PlayerCapabilities::PlayerCapabilities;
 use crate::net::minecraft::inventory::ContainerPlayer::ContainerPlayer;
+use crate::net::minecraft::inventory::EntityEquipmentSlot::EntityEquipmentSlot;
 use crate::net::minecraft::inventory::OpenContainer::OpenContainer;
 use crate::net::minecraft::item::ItemStack::ItemStack;
 use crate::net::minecraft::item::ItemElytra::ItemElytra;
 use crate::net::minecraft::util::FoodStats::FoodStats;
+use crate::net::minecraft::util::CooldownTracker::CooldownTracker;
 use crate::net::minecraft::util::EnumHand::EnumHand;
 use crate::net::minecraft::network::Packet::RawPacket;
 use crate::net::minecraft::network::datasync::DataSerializers::DataValue;
@@ -36,6 +38,7 @@ use crate::net::minecraft::network::play::client::CPacketVehicleMove::CPacketVeh
 use crate::net::minecraft::network::play::client::CPacketPlayer::{
     CPacketPlayer, Position, PositionRotation, Rotation,
 };
+use crate::net::minecraft::util::EnumFacing::EnumFacing;
 use crate::net::minecraft::util::MovementInputFromOptions::{
     MovementInputFromOptions, MovementKeyState,
 };
@@ -45,6 +48,7 @@ use crate::net::minecraft::util::math::MathHelper::{
     cos as minecraft_cos, sin as minecraft_sin, wrap_degrees_f32,
 };
 use crate::net::minecraft::util::math::AxisAlignedBB::AxisAlignedBB;
+use crate::net::minecraft::world::EnumDifficulty::EnumDifficulty;
 use crate::net::minecraft::world::GameType::GameType;
 use crate::net::minecraft::stats::RecipeBook::RecipeBook;
 use crate::net::minecraft::potion::PotionEffect::PotionEffect;
@@ -93,6 +97,8 @@ pub struct EntityPlayerSP {
     /// entity status opcode 35.
     totemParticleEmitter: Option<ParticleEmitter>,
     pub foodStats: FoodStats,
+    /// MCP `EntityPlayer.cooldownTracker`.
+    pub cooldownTracker: CooldownTracker,
     pub hurtTime: i32,
     pub maxHurtTime: i32,
     pub deathTime: i32,
@@ -228,6 +234,7 @@ impl EntityPlayerSP {
             itemActivationRandomY: 0.0,
             totemParticleEmitter: None,
             foodStats: FoodStats::default(),
+            cooldownTracker: CooldownTracker::default(),
             hurtTime: 0,
             maxHurtTime: 0,
             deathTime: 0,
@@ -551,6 +558,10 @@ impl EntityPlayerSP {
             self.entity.motionY = 0.0;
             self.entity.motionZ = 0.0;
             self.movementInput.updatePlayerMoveState(MovementKeyState::default());
+            // MCP EntityPlayer#onUpdate ticks CooldownTracker even while the
+            // player is sleeping; the sleeping rendering/input branch must not
+            // freeze item cooldowns.
+            self.cooldownTracker.tick();
             self.updateSize(world);
             self.entity.firstUpdate = false;
             return self.onUpdateWalkingPlayer();
@@ -559,6 +570,9 @@ impl EntityPlayerSP {
         self.entity.handleWaterMovement(world);
         let mut packets = self.onLivingUpdate(world, keys, gameType);
         self.updateCape();
+        // MCP EntityPlayer#onUpdate ticks the item CooldownTracker after the
+        // inherited living update and cape update, once per loaded client tick.
+        self.cooldownTracker.tick();
         self.updateSize(world);
 
         if let Some(directVehicleId) = self.entity.ridingEntityId {
@@ -875,6 +889,21 @@ impl EntityPlayerSP {
         // jumpTicks before evaluating this tick's jump input.
         if self.flyToggleTimer > 0 {
             self.flyToggleTimer -= 1;
+        }
+
+        // MCP `EntityPlayer#onLivingUpdate` peaceful regeneration, including
+        // the World#getGameRules naturalRegeneration gate. Multiplayer clients
+        // retain the vanilla default rules unless an integrated-world path
+        // later replaces them from authoritative world data.
+        if world.getDifficulty() == EnumDifficulty::Peaceful
+            && world.getGameRules().getBoolean("naturalRegeneration")
+        {
+            if self.health < self.getMaxHealth() && self.entity.ticksExisted % 20 == 0 {
+                self.heal(1.0);
+            }
+            if self.foodStats.needFood() && self.entity.ticksExisted % 10 == 0 {
+                self.foodStats.setFoodLevel(self.foodStats.getFoodLevel() + 1);
+            }
         }
         if self.jumpTicks > 0 {
             self.jumpTicks -= 1;
@@ -1293,6 +1322,17 @@ impl EntityPlayerSP {
     /// eye position. It is used by the mining-speed penalty and underwater
     /// overlays once that renderer is connected.
     pub fn isInsideWater(&self, world: &WorldClient) -> bool {
+        // MCP `Entity#isInsideOfMaterial` returns false while riding a boat.
+        if let Some(vehicleId) = self.entity.ridingEntityId {
+            if world.getNonPlayerEntityByID(vehicleId).is_some_and(|vehicle| {
+                matches!(
+                    &vehicle.kind,
+                    ClientEntityKind::Object { objectType: ObjectSpawnType::Boat, .. }
+                )
+            }) {
+                return false;
+            }
+        }
         let eye_y = self.entity.posY + self.getEyeHeight() as f64;
         let pos = BlockPos::new(
             self.entity.posX.floor() as i32,
@@ -1511,6 +1551,70 @@ impl EntityPlayerSP {
         if emitter.isExpired() {
             self.totemParticleEmitter = None;
         }
+    }
+
+    /// MCP `EntityLivingBase#heal`.
+    pub fn heal(&mut self, healAmount: f32) {
+        if self.health > 0.0 {
+            self.setHealth(self.health + healAmount);
+        }
+    }
+
+    /// MCP `EntityLivingBase#setHealth`, clamped to max health.
+    pub fn setHealth(&mut self, health: f32) {
+        self.health = health.clamp(0.0, self.getMaxHealth());
+    }
+
+    /// MCP `EntityLivingBase#getMaxHealth` through the MAX_HEALTH attribute.
+    pub fn getMaxHealth(&self) -> f32 {
+        self.attributeMap.getAttributeValue("generic.maxHealth", 20.0) as f32
+    }
+
+    /// MCP `EntityLivingBase#shouldHeal`.
+    pub fn shouldHeal(&self) -> bool {
+        self.health > 0.0 && self.health < self.getMaxHealth()
+    }
+
+    /// MCP `EntityPlayer#getTotalArmorValue`.
+    pub fn getTotalArmorValue(&self) -> i32 {
+        self.inventory.armorInventory.iter().enumerate().fold(0, |total, (index, stack)| {
+            let Some(definition) = crate::net::minecraft::item::ItemArmor::ItemArmor::definition(stack.itemId) else {
+                return total;
+            };
+            let slot = match index {
+                0 => EntityEquipmentSlot::Feet,
+                1 => EntityEquipmentSlot::Legs,
+                2 => EntityEquipmentSlot::Chest,
+                _ => EntityEquipmentSlot::Head,
+            };
+            total + definition.material.damageReduction(slot)
+        })
+    }
+
+    /// MCP `Entity#getAir`: data-manager AIR value, 300 when full.
+    pub fn getAir(&self) -> i32 {
+        self.dataManager.varInt(1, 300)
+    }
+
+    /// MCP `EntityPlayer#canPlayerEdit`. Adventure-mode edit permission is
+    /// granted by `CanPlaceOn` or an item that can edit blocks; survival and
+    /// creative normally have `capabilities.allowEdit=true`.
+    pub fn canPlayerEdit(
+        &self,
+        world: &WorldClient,
+        pos: BlockPos,
+        facing: EnumFacing,
+        stack: &ItemStack,
+    ) -> bool {
+        if self.capabilities.allowEdit {
+            return true;
+        }
+        if stack.isEmpty() {
+            return false;
+        }
+        let support = pos.offset(facing.opposite(), 1);
+        let block = world.getBlockState(support).getBlock();
+        stack.canPlaceOn(block) || stack.canEditBlocks()
     }
 
     pub fn handleStatusUpdate(&mut self, opcode: i8) {
@@ -1808,6 +1912,8 @@ impl EntityPlayerSP {
     pub const fn getLastDamage(&self) -> f32 { self.lastDamage }
     pub fn getFoodStats(&self) -> &FoodStats { &self.foodStats }
     pub fn getFoodStatsMut(&mut self) -> &mut FoodStats { &mut self.foodStats }
+    pub fn getCooldownTracker(&self) -> &CooldownTracker { &self.cooldownTracker }
+    pub fn getCooldownTrackerMut(&mut self) -> &mut CooldownTracker { &mut self.cooldownTracker }
 
     pub fn setPositionAndRotation(&mut self, x: f64, y: f64, z: f64, yaw: f32, pitch: f32) {
         self.entity.setPositionAndRotation(x, y, z, yaw, pitch);
