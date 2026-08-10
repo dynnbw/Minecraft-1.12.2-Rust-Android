@@ -596,3 +596,9 @@ RustCraft-Public 仅作为经过真实运行验证的渲染工程参考，用于
 - 账号管理器的交互与行为参考 Exhibition-Reborn；仓库不包含其原始 Java 二进制、专有资源或品牌资产。
 - 使用者必须自行拥有合法的 Minecraft 资源来源并遵守相关许可和服务条款。
 - 仓库代码的使用权限以根目录 `LICENSE` 为准。
+
+<img width="1920" height="1020" alt="QQ20260810-113451" src="https://github.com/user-attachments/assets/8fae411f-57e8-4885-ac72-a2be00c98538" />
+<img width="1920" height="1020" alt="QQ20260810-113523" src="https://github.com/user-attachments/assets/c7bb67a2-85ec-452d-bce5-7aa01278c748" />
+<img width="1920" height="1020" alt="QQ20260810-113639" src="https://github.com/user-attachments/assets/e1209daa-c777-40be-b244-2df2ed6ee1ff" />
+<img width="1920" height="1020" alt="QQ20260810-113851" src="https://github.com/user-attachments/assets/07e50b4b-2a7b-4798-8877-77558c29da0b" />
+随便传几张照片展示下效果罢了
