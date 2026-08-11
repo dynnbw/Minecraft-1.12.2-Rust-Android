@@ -6253,7 +6253,7 @@ impl MinecraftApplication {
             let result = self
                 .mainMenu
                 .as_mut()
-                .map(|runtime| runtime.worldHotbarKey(KeyCode::KeyQ, self.keyboardModifiers));
+                .map(|runtime| runtime.worldHotbarBinding(KeyBindingId::Drop, self.keyboardModifiers));
             log::info!("touch long-press fired: hotbar slot={hotbarSlot} drop result={result:?}");
             if let Some(Err(message)) = result {
                 log::error!("failed dropping item on long press: {message}");
@@ -8086,8 +8086,18 @@ impl ApplicationHandler for MinecraftApplication {
                                             7 => KeyCode::Digit8,
                                             _ => KeyCode::Digit9,
                                         };
-                                        let hotbarResult = self.mainMenu.as_mut().map(|runtime| runtime.worldHotbarKey(key, self.keyboardModifiers));
-                                        log::debug!("touch hotbar tap: slot={} key={key:?} result={hotbarResult:?}", press.hotbarSlot);
+                                        // MCP `GuiKeyBindingList` maps the physical
+                                        // key through the configured bindings; the
+                                        // touch bridge reuses that mapping so a
+                                        // rebound hotbar key stays in sync.
+                                        let binding = lwjgl_from_winit(key)
+                                            .and_then(|code| self.minecraft.as_ref().and_then(|minecraft| {
+                                                minecraft.gameSettings.keyBindingIdForCode(code)
+                                            }));
+                                        let hotbarResult = binding
+                                            .map(|binding| self.mainMenu.as_mut().map(|runtime| runtime.worldHotbarBinding(binding, self.keyboardModifiers)))
+                                            .flatten();
+                                        log::debug!("touch hotbar tap: slot={} key={key:?} binding={binding:?} result={hotbarResult:?}", press.hotbarSlot);
                                         match hotbarResult {
                                             Some(Err(message)) => log::error!("failed switching hotbar slot: {message}"),
                                             _ => {}
