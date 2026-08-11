@@ -98,8 +98,9 @@ use crate::net::minecraft::network::play::server::SPacketSetExperience::SPacketS
 use crate::net::minecraft::network::play::server::SPacketSignEditorOpen::SPacketSignEditorOpen;
 use crate::net::minecraft::network::play::server::SPacketPlayerAbilities::SPacketPlayerAbilities;
 use crate::net::minecraft::network::play::server::SPacketChangeGameState::SPacketChangeGameState;
-use crate::net::minecraft::network::play::server::SPacketSpawnPosition::SPacketSpawnPosition;
 use crate::net::minecraft::network::play::server::SPacketServerDifficulty::SPacketServerDifficulty;
+use crate::net::minecraft::network::play::server::SPacketSpawnPosition::SPacketSpawnPosition;
+use crate::net::minecraft::network::play::server::SPacketCooldown::SPacketCooldown;
 use crate::net::minecraft::network::play::server::SPacketSetPassengers::SPacketSetPassengers;
 use crate::net::minecraft::network::play::server::SPacketMoveVehicle::SPacketMoveVehicle;
 use crate::net::minecraft::network::play::server::SPacketMaps::SPacketMaps;
@@ -1467,9 +1468,9 @@ fn try_start_using_held_item(
     {
         return false;
     }
-    // `EntityPlayer#canEat(alwaysEdible)` rejection: `(alwaysEdible ||
-    // needFood()) && !disableDamage`. The 1.12.2 capabilities enable
-    // disableDamage in creative and spectator, which blocks food use there.
+    // MCP `EntityPlayer#canEat(alwaysEdible)`: `(alwaysEdible || needFood())
+    // && !capabilities.disableDamage`.
+
     if stack.isFood()
         && (player.capabilities.disableDamage
             || (player.getFoodStats().getFoodLevel() >= 20 && !stack.isAlwaysEdible()))
@@ -1571,6 +1572,7 @@ impl NetHandlerPlayClient {
             0x14 => self.handleWindowItems(packet),
             0x15 => self.handleWindowProperty(packet),
             0x16 => self.handleSetSlot(packet),
+            0x17 => self.handleCooldown(packet),
             0x18 => self.handleCustomPayload(packet),
             0x19 => self.handleCustomSound(packet),
             0x1A => self.handleDisconnect(packet),
@@ -3033,30 +3035,55 @@ impl NetHandlerPlayClient {
     pub fn handleChangeGameState(&mut self, rawPacket: &RawPacket) -> Result<PlayHandlerEvent, NetHandlerPlayClientError> {
         let packet = SPacketChangeGameState::readPacketData(rawPacket)
             .map_err(|error| packet_error(rawPacket.id, error))?;
-        if packet.getGameState() == 3 {
-            let gameType = GameType::getByID((packet.getValue() + 0.5).floor() as i32);
-            self.sharedState.update(|state| {
-                state.gameType = gameType;
-                if let Some(player) = state.thePlayer.as_mut() {
-                    gameType.configurePlayerCapabilities(&mut player.capabilities);
+        match packet.getGameState() {
+            1 => self.sharedState.update(|state| {
+                if let Some(world) = state.worldClient.as_mut() {
+                    world.setRainStrength(0.0);
                 }
-            });
-        } else if packet.getGameState() == 4 {
-            // MCP `NetHandlerPlayClient#handleChangeGameState` game state 4:
-            // `EntityPlayerMP` announces the end-credits on leaving the End.
-            // Value 0 (credits already seen) respawns immediately, value 1
-            // opens `GuiWinGame`, whose Runnable sends PERFORM_RESPAWN.
-            return Ok(if (packet.getValue() + 0.5).floor() as i32 == 0 {
-                PlayHandlerEvent::AutoRespawn
-            } else {
-                PlayHandlerEvent::WinGame
-            });
+            }),
+            2 => self.sharedState.update(|state| {
+                if let Some(world) = state.worldClient.as_mut() {
+                    world.setRainStrength(1.0);
+                }
+            }),
+            3 => {
+                let gameType = GameType::getByID((packet.getValue() + 0.5).floor() as i32);
+                self.sharedState.update(|state| {
+                    state.gameType = gameType;
+                    if let Some(player) = state.thePlayer.as_mut() {
+                        gameType.configurePlayerCapabilities(&mut player.capabilities);
+                    }
+                });
+            }
+            4 => {
+                // MCP `NetHandlerPlayClient#handleChangeGameState` game state 4:
+                // `EntityPlayerMP` announces the end-credits on leaving the End.
+                // Value 0 (credits already seen) respawns immediately, value 1
+                // opens `GuiWinGame`, whose Runnable sends PERFORM_RESPAWN.
+                return Ok(if (packet.getValue() + 0.5).floor() as i32 == 0 {
+                    PlayHandlerEvent::AutoRespawn
+                } else {
+                    PlayHandlerEvent::WinGame
+                });
+            }
+            7 => self.sharedState.update(|state| {
+                if let Some(world) = state.worldClient.as_mut() {
+                    world.setRainStrength(packet.getValue());
+                }
+            }),
+            8 => self.sharedState.update(|state| {
+                if let Some(world) = state.worldClient.as_mut() {
+                    world.setThunderStrength(packet.getValue());
+                }
+            }),
+            _ => {}
         }
         Ok(PlayHandlerEvent::None)
     }
 
-    /// MCP `NetHandlerPlayClient#handleServerDifficulty`: stores the world
-    /// difficulty on the WorldInfo; the lock is not yet surfaced anywhere.
+    /// MCP `NetHandlerPlayClient#handleServerDifficulty`: stores the packet
+    /// value on the client World's WorldInfo-equivalent difficulty field.
+
     pub fn handleServerDifficulty(&mut self, rawPacket: &RawPacket) -> Result<PlayHandlerEvent, NetHandlerPlayClientError> {
         let packet = SPacketServerDifficulty::readPacketData(rawPacket)
             .map_err(|error| packet_error(rawPacket.id, error))?;
@@ -3080,6 +3107,22 @@ impl NetHandlerPlayClient {
             }
             if let Some(world) = state.worldClient.as_mut() {
                 world.setSpawnPosition(spawnPos);
+            }
+        });
+        Ok(PlayHandlerEvent::None)
+    }
+
+    /// MCP `NetHandlerPlayClient#handleCooldown`.
+    pub fn handleCooldown(&mut self, rawPacket: &RawPacket) -> Result<PlayHandlerEvent, NetHandlerPlayClientError> {
+        let packet = SPacketCooldown::readPacketData(rawPacket)
+            .map_err(|error| packet_error(rawPacket.id, error))?;
+        self.sharedState.update(|state| {
+            if let Some(player) = state.thePlayer.as_mut() {
+                if packet.getTicks() == 0 {
+                    player.getCooldownTrackerMut().removeCooldown(packet.getItemId());
+                } else {
+                    player.getCooldownTrackerMut().setCooldown(packet.getItemId(), packet.getTicks());
+                }
             }
         });
         Ok(PlayHandlerEvent::None)

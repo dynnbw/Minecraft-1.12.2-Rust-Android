@@ -1538,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "minecraft-1-12-2-rust-vulkan"
-version = "0.112.1"
+version = "0.127.0"
 dependencies = [
  "aes",
  "android_logger",
@@ -1570,6 +1570,7 @@ dependencies = [
  "rayon",
  "rodio",
  "rsa",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha1",

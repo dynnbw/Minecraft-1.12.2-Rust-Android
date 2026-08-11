@@ -2,9 +2,13 @@
 
 > 使用 Rust 对 Minecraft Java Edition 1.12.2 客户端进行语义级移植,当前重心为 **Android 平台(协议 340,Vulkan 渲染,物理键鼠操作)**。
 
-当前 Android 基线:**0.112.1**(同步上游 v0.112.1)<br>
-验证设备:**Xiaomi 12 Pro**(Adreno 730,Android 12+,Vulkan 1.1)<br>
-桌面基线:**Windows 10/11 x64**(Vulkan / OpenGL 双后端,见[桌面版章节](#桌面版-windows))
+> 使用 Rust 对 Minecraft Java Edition 1.12.2 客户端进行语义级移植，并提供 Vulkan 与 OpenGL 双渲染后端。
+
+当前公开基线：**0.127.0**<br>
+当前重点平台：**Windows 10/11 x64**<br>
+协议目标：**Minecraft Java Edition 1.12.2 / Protocol 340**<br>
+Android 基线:**0.112.1**(同步上游 v0.112.1)<br>
+验证设备:**Xiaomi 12 Pro**(Adreno 730,Android 12+,Vulkan 1.1)
 
 ---
 
@@ -17,6 +21,8 @@
 本项目的目标不是制作一个"外观类似 Minecraft"的独立仿制游戏,而是在 Rust 中尽可能忠实地重建 Minecraft Java Edition 1.12.2 客户端的行为、状态、调用流程、网络协议、GUI、模型、动画和操作体验。原版 Minecraft 1.12.2 与对应 MCP 代码结构是行为基准。
 
 **Android 版定位**:远程多人客户端,Vulkan 渲染,物理键鼠为主,触屏通过桥接层映射为键鼠操作(点击/滑动/长按)。项目本身不含单人集成服务器。
+
+项目当前已经同时具备远程多人客户端与正在迁移中的单人 IntegratedServer 路径。v0.127.0 已实现 Flat 世界的真实 LocalChannel/IntegratedServer 进入链、服务器权威区块修改与 Anvil/playerdata 持久化，并已把 Default/Default 1.1/Large Biomes/Amplified/Customized 的主世界生成推进到 MCP 派生的 GenLayer、BiomeProvider、Noise、Biome surface、洞穴和峡谷主干。这仍不等于整个 Minecraft 1.12.2 已无差异完成：结构生成、population/decorator、Nether/End、完整 Entity/TileEntity 生命周期以及部分复杂交互仍在继续迁移。
 
 ## 功能状态(Android)
 
@@ -46,6 +52,113 @@
 - 触摸 UI(虚拟摇杆等)
 - OpenGL 后端
 - Microsoft 登录 UI(桌面版已有内置账号管理器,Android 侧未接入)
+
+## v0.127.0 当前进展
+
+- Flat 单人世界通过真实 `IntegratedServer -> LocalChannel -> Login/Play -> WorldClient` 链进入，不使用客户端静态地形替代服务器。
+- 方块修改开始由 `PlayerInteractionManager / WorldServer / Chunk` 权威处理，并进入 Anvil 异步保存；玩家位置、背包、当前槽位等写入 `playerdata/<UUID>.dat`。
+- Default、Default 1.1、Large Biomes、Amplified、Customized 已接入真实 `IntCache / GenLayer / BiomeProvider / NoiseGenerator / ChunkGeneratorOverworld` 基础地形，并包含 biome surface、洞穴和峡谷。
+- Vulkan/OpenGL 继续共享 MCP 派生场景状态；OpenGL 已包含 resident-span 局部 `BufferSubData` 更新等性能路径。
+- 尚未完成的主项包括 Overworld structures 与 population/decorator、Nether/End generator、完整 TileEntity/复杂多方块放置、完整服务端实体生命周期与更多单人服务器行为。
+
+## 主要特色
+
+
+### Minecraft 1.12.2 语义结构
+
+源码目录尽量镜像 MCP 包路径，包括：
+
+- `net.minecraft.client`
+- `net.minecraft.entity`
+- `net.minecraft.block`
+- `net.minecraft.item`
+- `net.minecraft.network`
+- `net.minecraft.world`
+- `net.optifine`
+
+项目包含协议 340 的登录、加密和多人游戏数据路径，以及 GUI、HUD、物品栏、容器、资源包、声音、玩家皮肤/披风、方块状态、实体渲染、粒子和维度相关实现。当前版本还包含内置账号管理器、Microsoft 浏览器 OAuth、Token/Offline 会话切换和远程玩家名称标签。各系统的完成程度并不完全相同，公开发布时不应将本项目描述为原版客户端的无差异替代品。
+
+### Vulkan 渲染后端
+
+Vulkan 路径使用 Vulkan 1.1，主要技术包括：
+
+- 原版 `RenderChunk`、`CompiledChunk` 与 `VisGraph` 可见性结构；
+- `SOLID`、`CUTOUT_MIPPED`、`CUTOUT`、`TRANSLUCENT` 四个方块渲染层；
+- 共享区块顶点/索引显存池；
+- 设备本地常驻区块网格；
+- 多绘制间接命令；
+- 有界区块编译和上传队列；
+- 原版透明四边形中心距离排序与运行时重新排序；
+- 动态实体、方块实体和静态悬挂实体独立 GPU 流；
+- Vulkan 原生 GUI、全景主菜单和异步纹理上传；
+- 帧槽 Fence 驱动的资源延迟回收。
+
+### OpenGL 渲染后端
+
+OpenGL 路径创建 OpenGL 3.3 Compatibility Profile，主要技术包括：
+
+- 与 Vulkan 共用的 MCP 场景构建结果；
+- `RenderRegion` 驻留和 `MultiDrawElements`；
+- 精确透明索引区间更新；
+- 原版实体与方块实体程序边界；
+- OptiFine 1.12.2 风格的 G-buffer、composite、final 与 shadow 程序路径；
+- Shader Options、维度目录、include 展开和光影包配置。
+
+**OptiFine 光影仅在 OpenGL 后端启用。** Vulkan 后端不会直接运行传统 OptiFine GLSL 光影包。
+
+### 内置账号管理器
+
+主菜单中的 `Accounts` 页面提供本地账号列表和会话切换，当前支持：
+
+- Microsoft 浏览器 OAuth 登录；
+- 已保存 Microsoft 账号的访问令牌登录和刷新令牌续期；
+- Minecraft Access Token 登录；
+- `M.C` 刷新令牌登录；
+- Offline 用户名会话；
+- 账号排序、删除、双击登录、头像显示和当前账号高亮；
+- 使用当前 Minecraft Access Token 上传 Classic 或 Slim 皮肤。
+
+认证成功后会替换客户端真实 `Session`，并继续使用 1.12.2 的 `NetHandlerLoginClient → joinServer` 认证链，不是只修改界面用户名。
+
+账号数据保存在：
+
+```text
+config/account.json
+```
+
+为保持与参考账号管理器兼容，该文件包含明文刷新令牌和 Minecraft Access Token。仓库的 `.gitignore` 已忽略整个 `config/`，但提交前仍必须检查 Git 变更列表，确保没有通过强制添加、旧提交或其他路径泄露账号凭据。
+
+### 远程玩家名称标签
+
+玩家名称标签按 Minecraft 1.12.2 的 `RenderLivingBase`、`RenderPlayer`、`ScorePlayerTeam` 与 `Scoreboard` 行为实现，包括：
+
+- 普通玩家 64 格、潜行玩家 32 格显示距离；
+- 队伍前缀、后缀、颜色与四种名称可见规则；
+- 友军隐身可见和旁观者相关判断；
+- 普通名牌的穿墙暗色层与深度测试亮色层；
+- 潜行名牌的遮挡和深度写入规则；
+- 10 格内显示记分板显示槽 2 的分数与目标名称；
+- 第三人称不显示本地玩家自己的名称。
+
+### 资源系统
+
+项目不会在仓库中捆绑客户端运行所需的完整 Mojang 资源集合。源码中仅保留构建或界面所需的少量内嵌元数据与默认图标；完整纹理、声音、字体、模型和语言资源仍由维护者或用户从合法本地 Minecraft 安装和 MCP 资源中导入。
+
+资源导入完成后位于：
+
+```text
+runtime/assets/
+└─ minecraft/
+   ├─ blockstates/
+   ├─ lang/
+   ├─ models/
+   ├─ sounds/
+   ├─ textures/
+   ├─ optifine/
+   └─ mcpatcher/
+```
+
+
 
 ## 安卓构建与打包
 
@@ -180,12 +293,26 @@ target\release\mc112-client.exe run --assets runtime/assets
 
 ## 当前边界
 
-- 项目不是 Mojang 官方客户端
-- 主要运行路径是远程多人客户端;单人集成服务器不在当前基线
+- 项目不是 Mojang 官方客户端，也不是 Minecraft 1.12.2 的完成版替代品
+- 主要运行路径是远程多人客户端;Android 侧单机集成服务器不在当前基线
+- Flat IntegratedServer 已能真实创建/进入；方块和玩家状态的服务端权威保存链已开始闭合，但复杂 TileEntity、多方块、红石依赖交互仍需继续补齐
+- Default / Default 1.1 / Large Biomes / Amplified / Customized 已有真实 MCP 派生基础地形、biome surface、洞穴和峡谷；村庄、矿井、要塞、神殿、海底神殿、林地府邸以及湖泊、地牢、矿物、树木、花草等 population/decorator 仍在迁移
+- Nether、End 与 Debug generator 尚未达到完整 1.12.2 行为
 - 部分少见实体、TileEntity、交互或视觉边缘情况仍可能与原版存在差异
 - 任意第三方 OptiFine 光影包的普遍兼容性未作保证
-- 不捆绑原版资产,首次构建前必须导入资源
-- 发现差异时,请提供:原版表现、本项目表现、可复现步骤、渲染后端、资源包/光影包、完整日志
+- 内置 Microsoft 登录依赖 Microsoft/Xbox/Minecraft 在线认证服务，服务端策略、二次验证或账号状态可能导致登录失败
+- `config/account.json` 保存明文令牌，只能保留在可信本地环境中
+- 仓库不捆绑原版资产，因此首次运行前必须从合法本地来源导入资源
+
+发现差异时，应提供：
+
+1. Minecraft 1.12.2 原版表现；
+2. 本项目表现；
+3. 可复现步骤；
+4. Vulkan 或 OpenGL 后端；
+5. 使用的世界类型、资源包/光影包；
+6. 完整日志；
+7. 对应 MCP 类或方法（如可确定）。
 
 ## 开发与贡献约束
 
@@ -200,8 +327,15 @@ target\release\mc112-client.exe run --assets runtime/assets
 
 ## 法律声明
 
-- 本项目与 Mojang Studios、Microsoft、MCP、OptiFine 均无官方隶属或认可关系
-- "Minecraft"及相关资产归其权利人所有
-- 本仓库不授予任何 Minecraft、MCP、OptiFine、光影包或材质包的再分发权
-- 使用者必须自行拥有合法的 Minecraft 资源来源并遵守相关许可和服务条款
-- 仓库代码的使用权限以根目录 `LICENSE` 为准
+- 本项目与 Mojang Studios、Microsoft、MCP、OptiFine 均无官方隶属或认可关系。
+- “Minecraft”及相关资产归其权利人所有。
+- 本仓库不授予任何 Minecraft、MCP、OptiFine、RustCraft、Exhibition-Reborn、光影包或材质包的再分发权。
+- 账号管理器的交互与行为参考 Exhibition-Reborn；仓库不包含其原始 Java 二进制、专有资源或品牌资产。
+- 使用者必须自行拥有合法的 Minecraft 资源来源并遵守相关许可和服务条款。
+- 仓库代码的使用权限以根目录 `LICENSE` 为准。
+
+<img width="1920" height="1020" alt="QQ20260810-113451" src="https://github.com/user-attachments/assets/8fae411f-57e8-4885-ac72-a2be00c98538" />
+<img width="1920" height="1020" alt="QQ20260810-113523" src="https://github.com/user-attachments/assets/c7bb67a2-85ec-452d-bce5-7aa01278c748" />
+<img width="1920" height="1020" alt="QQ20260810-113639" src="https://github.com/user-attachments/assets/e1209daa-c777-40be-b244-2df2ed6ee1ff" />
+<img width="1920" height="1020" alt="QQ20260810-113851" src="https://github.com/user-attachments/assets/07e50b4b-2a7b-4798-8877-77558c29da0b" />
+随便传几张照片展示下效果罢了
