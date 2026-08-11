@@ -4260,6 +4260,10 @@ impl MainMenuRuntime {
         framebufferWidth: u32,
         framebufferHeight: u32,
         partialTicks: f32,
+        // MCP `Timer` frame-interval fraction (frameInterval / tickLength)
+        // used by animation time accumulation such as `GuiWinGame#time`; the
+        // render interpolation uses `partialTicks` (tick residual) instead.
+        frameIntervalTicks: f32,
         debugFps: i32,
         graphicsDevice: &str,
         renderBackend: crate::launcher::RenderBackend::RenderBackend,
@@ -4402,6 +4406,7 @@ impl MainMenuRuntime {
                     ),
                     WorldGuiScreen::WinGame(screen) => screen.drawScreen(
                         &mut drawList, &mut self.fontRendererObj, mouseX, mouseY, partialTicks,
+                        frameIntervalTicks,
                     ),
                 }
                 drawList
@@ -6014,7 +6019,16 @@ struct MinecraftApplication {
     fatalError: Option<anyhow::Error>,
     redrawPending: bool,
     nextFrameDeadline: Instant,
-    nextTickDeadline: Instant,
+    /// MCP `Timer#field_194147_b`: accumulated frame-interval ticks. The
+    /// integer part is the number of ticks to run (`elapsedTicks`), the
+    /// fraction stays as the render partial-ticks budget.
+    timerAccumulator: f32,
+    /// MCP `Timer#lastSyncSysClock`: time of the last `updateTimer`.
+    lastTimerSync: Instant,
+    /// Time of the last rendered frame; animation time accumulation
+    /// (`GuiWinGame#time`) uses the frame interval in ticks (MCP `Timer`
+    /// frame-interval semantics) so it stays at 20 TPS at any frame rate.
+    lastRenderFrame: Instant,
     pendingResizeSince: Option<Instant>,
     #[cfg(target_os = "android")]
     lastTouchPosition: Option<PhysicalPosition<f64>>,
@@ -6562,7 +6576,8 @@ impl MinecraftApplication {
     fn new(minecraft: Minecraft) -> Self {
         Self {
             minecraft: Some(minecraft), renderer: None, window: None, mainMenu: None, fatalError: None,
-            redrawPending: false, nextFrameDeadline: Instant::now(), nextTickDeadline: Instant::now(),
+            redrawPending: false, nextFrameDeadline: Instant::now(), timerAccumulator: 0.0,
+            lastTimerSync: Instant::now(), lastRenderFrame: Instant::now(),
             pendingResizeSince: None, keyboardModifiers: ModifiersState::empty(), worldMouseGrabbed: false,
             #[cfg(target_os = "android")]
             lastTouchPosition: None,
@@ -7738,7 +7753,11 @@ impl ApplicationHandler for MinecraftApplication {
             Err(error) => { self.fail(eventLoop, error.context("failed initializing GuiMainMenu")); return; }
         };
         self.renderer = Some(renderer); self.mainMenu = Some(mainMenu); self.window = Some(window);
-        let now = Instant::now(); self.nextFrameDeadline = now; self.nextTickDeadline = now + CLIENT_TICK_INTERVAL;
+        let now = Instant::now();
+        self.nextFrameDeadline = now;
+        self.timerAccumulator = 0.0;
+        self.lastTimerSync = now;
+        self.lastRenderFrame = now;
         self.requestRedraw();
     }
 
@@ -8569,10 +8588,26 @@ impl ApplicationHandler for MinecraftApplication {
                     ) {
                         let extent = renderer.extent();
                         if extent.width > 0 && extent.height > 0 {
+                            // MCP `Timer#field_194147_b`: partialTicks is the
+                            // tick-pump residual — the time since the last
+                            // pumped tick in ticks — not the frame interval.
+                            // `updateTimer` folds the frame interval into the
+                            // accumulator and the render consumes the
+                            // remainder, exactly like `Minecraft#runGameLoop`.
                             let partialTicks = render_partial_ticks(
+                                self.timerAccumulator,
                                 Instant::now(),
-                                self.nextTickDeadline,
+                                self.lastTimerSync,
                             );
+                            // MCP `Timer`: animation time accumulates the
+                            // frame interval in ticks (60 FPS -> 1/3 per
+                            // frame), independent of the interpolation
+                            // residual, so it stays at 20 TPS on any frame
+                            // rate and any wake-up cadence.
+                            let frameIntervalTicks =
+                                (frameStarted.duration_since(self.lastRenderFrame).as_secs_f32() * 20.0)
+                                    .min(1.0);
+                            self.lastRenderFrame = frameStarted;
                             let graphicsDevice = renderer.deviceName().to_owned();
                             let prepareStarted = frameStarted;
                             let preparedFrame = runtime.draw(
@@ -8580,6 +8615,7 @@ impl ApplicationHandler for MinecraftApplication {
                                 extent.width,
                                 extent.height,
                                 partialTicks,
+                                frameIntervalTicks,
                                 self.debugFps,
                                 &graphicsDevice,
                                 renderer.backend(),
@@ -8729,7 +8765,18 @@ impl ApplicationHandler for MinecraftApplication {
         }
 
         let now = Instant::now();
-        if now >= self.nextTickDeadline {
+        // MCP `Timer#updateTimer`: the frame interval in ticks is added to
+        // the accumulator; the integer part runs that many ticks (capped at
+        // 10 like the source) and the fraction is the render partial-ticks
+        // residual (`field_194147_b`), consumed by `render_partial_ticks` on
+        // the next RedrawRequested. The tick cadence is driven by wall time,
+        // exactly like `Minecraft#runGameLoop` with `timer.elapsedTicks`.
+        let frameDelta = (now.duration_since(self.lastTimerSync).as_secs_f32() * 20.0).min(1.0);
+        self.lastTimerSync = now;
+        self.timerAccumulator += frameDelta;
+        let elapsedTicks = (self.timerAccumulator as i32).min(10);
+        self.timerAccumulator -= elapsedTicks as f32;
+        if elapsedTicks > 0 {
             let (forceSprint, chatWidth, chatScale, particleSetting, showSubtitles) = self.minecraft.as_ref().map_or(
                 (false, 1.0, 1.0, 0, false),
                 |minecraft| (
@@ -8741,37 +8788,42 @@ impl ApplicationHandler for MinecraftApplication {
                 ),
             );
             let controlHeld = self.keyboardModifiers.control_key();
-            let (redraw, action) = self
-                .mainMenu
-                .as_mut()
-                .map(|runtime| runtime.updateScreen(
-                    forceSprint,
-                    chatWidth,
-                    chatScale,
-                    particleSetting,
-                    controlHeld,
-                    showSubtitles,
-                ))
-                .unwrap_or((false, None));
-            let hadAction = action.is_some();
-            if let Some(action) = action {
-                match self.applyGuiAction(action) {
-                    Ok(true) => { eventLoop.exit(); return; }
-                    Ok(false) => {}
-                    Err(error) => { self.fail(eventLoop, error.context("failed applying network GUI action")); return; }
+            for _ in 0..elapsedTicks {
+                let (redraw, action) = self
+                    .mainMenu
+                    .as_mut()
+                    .map(|runtime| runtime.updateScreen(
+                        forceSprint,
+                        chatWidth,
+                        chatScale,
+                        particleSetting,
+                        controlHeld,
+                        showSubtitles,
+                    ))
+                    .unwrap_or((false, None));
+                let hadAction = action.is_some();
+                if let Some(action) = action {
+                    match self.applyGuiAction(action) {
+                        Ok(true) => { eventLoop.exit(); return; }
+                        Ok(false) => {}
+                        Err(error) => { self.fail(eventLoop, error.context("failed applying network GUI action")); return; }
+                    }
                 }
+                self.applyRuntimeMouseFocusRequest();
+                if redraw || hadAction { self.requestRedraw(); }
             }
-            self.applyRuntimeMouseFocusRequest();
-            if redraw || hadAction { self.requestRedraw(); }
-            while self.nextTickDeadline <= now { self.nextTickDeadline += CLIENT_TICK_INTERVAL; }
         }
 
+        // Next wakeup for a tick: the fraction of the accumulator remaining.
+        let nextTickAt = now + Duration::from_secs_f32(
+            ((1.0 - self.timerAccumulator) / 20.0).max(0.0),
+        );
         let wakeup = if self.window.is_some() && self.mainMenu.is_some() && !self.suspended {
             if self.isFramerateLimitBelowMax() {
                 if now >= self.nextFrameDeadline {
                     self.requestRedraw();
                 }
-                Some(self.nextFrameDeadline.min(self.nextTickDeadline))
+                Some(self.nextFrameDeadline.min(nextTickAt))
             } else {
                 // 1.12.2 Unlimited: do not insert a frame-deadline wait. Winit
                 // Poll is the `Display.sync`-free equivalent for this backend.
@@ -8781,9 +8833,9 @@ impl ApplicationHandler for MinecraftApplication {
         } else if self.suspended {
             // Backgrounded: keep ticking (server keepalives) but never render;
             // the surface is dead until the next resume reacquires it.
-            Some(self.nextTickDeadline)
+            Some(nextTickAt)
         } else {
-            Some(self.nextTickDeadline)
+            Some(nextTickAt)
         };
         #[cfg(target_os = "android")]
         let wakeup = wakeup.and_then(|wakeup| {
@@ -8805,18 +8857,21 @@ impl ApplicationHandler for MinecraftApplication {
 }
 
 
-fn render_partial_ticks(now: Instant, nextTickDeadline: Instant) -> f32 {
-    let tickStart = nextTickDeadline
-        .checked_sub(CLIENT_TICK_INTERVAL)
-        .unwrap_or(nextTickDeadline);
-    if now <= tickStart {
-        0.0
-    } else if now >= nextTickDeadline {
-        1.0
-    } else {
-        now.duration_since(tickStart).as_secs_f32()
-            / CLIENT_TICK_INTERVAL.as_secs_f32()
-    }
+/// MCP `Timer#field_194147_b`: the render partial-ticks value is the tick
+/// accumulator's fractional remainder — the time since the last pumped tick,
+/// in tick units — not the raw frame interval. `updateTimer` folds the whole
+/// frame interval into the accumulator and consumes the whole ticks, so
+/// `residual + (now - lastSync) * 20` is the exact position within the
+/// current tick interval at the render instant. Rendering interpolates
+/// `prev + (current - prev) * partialTicks` with this value, which keeps the
+/// per-second animation speed at the fixed 20 TPS whatever the frame rate
+/// (60 FPS cycles the 0.333 / 0.667 / 0.0 sawtooth, 1000 FPS ramps 0 → 1 in
+/// hundredths; the per-second sum is 20). Clamped to the MCP `[0, 1)`
+/// invariant: a value reaching 1.0 means a tick boundary was crossed between
+/// the last pump and this render, where the interpolated position is the
+/// freshly ticked position until the next pump runs the tick.
+fn render_partial_ticks(residual: f32, now: Instant, lastTimerSync: Instant) -> f32 {
+    (residual + now.duration_since(lastTimerSync).as_secs_f32() * 20.0).clamp(0.0, 1.0)
 }
 
 const fn tick_right_click_delay(timer: i32) -> i32 {
@@ -8952,15 +9007,95 @@ mod frame_rate_tests {
     }
 
     #[test]
-    fn partial_ticks_advance_across_the_whole_client_tick() {
-        let tickStart = Instant::now();
-        let nextTick = tickStart + CLIENT_TICK_INTERVAL;
-        assert_eq!(render_partial_ticks(tickStart, nextTick), 0.0);
-        let middle = render_partial_ticks(
-            tickStart + Duration::from_millis(25),
-            nextTick,
-        );
-        assert!((middle - 0.5).abs() < 1.0e-6);
-        assert_eq!(render_partial_ticks(nextTick, nextTick), 1.0);
+    fn partial_ticks_is_the_tick_pump_residual() {
+        let lastSync = Instant::now();
+        // MCP `Timer#field_194147_b`: partialTicks is the accumulator
+        // remainder, not the frame interval. A fresh pump leaves its
+        // residual untouched...
+        let fresh = render_partial_ticks(1.0 / 3.0, lastSync, lastSync);
+        assert!((fresh - 1.0 / 3.0).abs() < 1.0e-6);
+        // ...and only the wall time since the last pump is added.
+        let later = render_partial_ticks(0.25, lastSync + Duration::from_millis(25), lastSync);
+        assert!((later - 0.75).abs() < 1.0e-6);
+        // A tick boundary crossed between pump and render clamps to the MCP
+        // `[0, 1)` invariant: the interpolated position is the freshly
+        // ticked position until the next pump runs the tick.
+        let crossed = render_partial_ticks(0.9, lastSync + Duration::from_millis(20), lastSync);
+        assert_eq!(crossed, 1.0);
+    }
+
+    #[test]
+    fn sixty_fps_partial_ticks_cycle_is_the_java_sawtooth() {
+        // MCP `Timer#updateTimer` at 60 FPS: each frame adds a third of a
+        // tick to the accumulator, a whole tick runs when the sum crosses 1
+        // and the render partial-ticks is the remainder: 0.333, 0.667, 0.0.
+        let mut residual = 0.0;
+        let mut lastSync = Instant::now();
+        let frame = Duration::from_secs_f64(1.0 / 60.0);
+        let mut sequence = Vec::new();
+        for _ in 0..6 {
+            let now = lastSync + frame;
+            residual += (now.duration_since(lastSync).as_secs_f32() * 20.0).min(1.0);
+            residual -= residual as i32 as f32;
+            lastSync = now;
+            sequence.push(render_partial_ticks(residual, lastSync, lastSync));
+        }
+        for (got, want) in sequence
+            .iter()
+            .zip([1.0 / 3.0, 2.0 / 3.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 0.0])
+        {
+            assert!((got - want).abs() < 1.0e-6, "partialTicks {got} != {want}");
+        }
+    }
+
+    #[test]
+    fn partial_ticks_sawtooth_is_continuous_at_any_frame_rate() {
+        // The interpolation residual is a continuous sawtooth (0..1) that
+        // ramps inside every tick and resets at the tick boundary: at any
+        // frame rate each tick interval is swept monotonically, so rendered
+        // positions never hold still and jump (frame-interval semantics
+        // would stall at `1/n` and jump at every tick). Animation *time*
+        // (e.g. `GuiWinGame#time`) accumulates the frame interval in ticks
+        // separately, which is what keeps a wall second at 20 ticks.
+        fn simulate(fps: u32) -> Vec<f32> {
+            let mut residual = 0.0;
+            let mut lastSync = Instant::now();
+            let frame = Duration::from_secs_f64(1.0 / fps as f64);
+            let mut sequence = Vec::new();
+            for _ in 0..fps {
+                let now = lastSync + frame;
+                residual += (now.duration_since(lastSync).as_secs_f32() * 20.0).min(1.0);
+                residual -= residual as i32 as f32;
+                lastSync = now;
+                sequence.push(render_partial_ticks(residual, lastSync, lastSync));
+            }
+            sequence
+        }
+        for fps in [60_u32, 240, 1000] {
+            let sequence = simulate(fps);
+            // One wall second of frames sweeps exactly 20 ticks (the tick
+            // rate), whatever the frame rate. Within a tick the residual
+            // strictly ramps up; at the tick boundary it falls back to the
+            // start of the next ramp, which the fallback count detects even
+            // with floating-point carry-over.
+            let mut previous = -1.0_f32;
+            let mut resets = 0_usize;
+            for value in sequence {
+                assert!(value < 1.0, "residual escapes the tick at {value}");
+                if value < previous {
+                    // Tick boundary: the next ramp restarts (floating-point
+                    // carry-over makes the new start a tiny epsilon, not 0).
+                    resets += 1;
+                }
+                previous = value;
+            }
+            // A wall second sweeps 20 ticks; ±1 tolerates the floating-point
+            // carry-over at the tick boundary (an accumulator that lands on
+            // 0.9999999 instead of 1.0 merges two ramps).
+            assert!(
+                (19..=21).contains(&resets),
+                "tick sweep count at {fps} FPS: {resets}"
+            );
+        }
     }
 }

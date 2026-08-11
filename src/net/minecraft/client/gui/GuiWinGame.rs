@@ -110,10 +110,11 @@ impl GuiWinGame {
     /// atlas (`append_font_draw_list`), where quad UVs are linear into the
     /// texture's atlas rectangle and never tile, unlike the standalone
     /// GL_REPEAT sampling MCP 1.12.2 relies on. The backdrop is therefore
-    /// emitted as explicit 32-pixel tiles (the project's options-background
-    /// scale, matching `GuiScreen#drawWorldBackground`), each with [0,1] UVs,
-    /// and the scroll offset is folded into a single tile so the sampled
-    /// rectangle never leaves the texture.
+    /// emitted as explicit 64-pixel tiles — `drawWinGameScreen` samples the
+    /// 16x16 options-background with `f * 0.015625` (=1/64) UVs, so one full
+    /// pattern repeats every 64 screen pixels — each with [0,1] UVs, and the
+    /// scroll offset is folded into a single tile so the sampled rectangle
+    /// never leaves the texture.
     fn drawWinGameScreen(&self, drawList: &mut GuiDrawList) {
         let mut f3 = self.time * 0.02;
         let f4 =
@@ -128,7 +129,7 @@ impl GuiWinGame {
         let f3 = (f3 * f3 * 96.0 / 255.0).min(1.0);
         let grey = (f3 * 255.0).round() as u32;
         let color = 0xFF00_0000 | (grey << 16) | (grey << 8) | grey;
-        let tile = 32.0;
+        let tile = 64.0;
         // MCP scrolls the background at half the text speed (`f` below).
         // Grid rows shift upward by the modulus of that scroll, keeping each
         // tile's UV in [0,1] while the pattern still scrolls continuously.
@@ -162,9 +163,15 @@ impl GuiWinGame {
         mouseX: i32,
         mouseY: i32,
         partialTicks: f32,
+        // MCP `Timer` frame-interval fraction (frameInterval / tickLength);
+        // `GuiWinGame#drawScreen` accumulates `time += partialTicks` with
+        // this value, keeping the scroll at 20 TPS on any frame rate. The
+        // `partialTicks` argument is the render interpolation residual and
+        // must not be used for time accumulation.
+        frameIntervalTicks: f32,
     ) {
         self.drawWinGameScreen(drawList);
-        self.time += partialTicks;
+        self.time += frameIntervalTicks;
         let f = -self.time * self.scrollSpeed;
         let width = self.GuiScreen.width;
         let height = self.GuiScreen.height;
@@ -234,6 +241,7 @@ impl GuiWinGame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn first_run_scrolls_half_speed_then_replay_three_quarters() {
@@ -260,5 +268,28 @@ mod tests {
         let mut screen = GuiWinGame::new(true);
         assert!(screen.keyPressedEscape());
         assert!(screen.isFinished());
+    }
+
+    #[test]
+    fn time_accumulates_at_twenty_ticks_per_second_at_any_frame_rate() {
+        // MCP `GuiWinGame#drawScreen`: `time += partialTicks` where
+        // partialTicks is the `Timer` frame-interval fraction
+        // (frameInterval / tickLength); a wall second of frames sums to 20
+        // ticks at any frame rate, so the credits scroll speed is
+        // independent of the frame rate.
+        fn drawOneSecond(fps: u32) -> f32 {
+            let mut screen = GuiWinGame::new(false);
+            screen.GuiScreen.height = 480;
+            let mut font = FontRenderer::test_metric_renderer();
+            let mut drawList = GuiDrawList::new();
+            let frameTicks = 20.0 / fps as f32;
+            for _ in 0..fps {
+                screen.drawScreen(&mut drawList, &mut font, 0, 0, frameTicks, frameTicks);
+            }
+            screen.time
+        }
+        assert!((drawOneSecond(60) - 20.0).abs() < 1.0e-3);
+        assert!((drawOneSecond(240) - 20.0).abs() < 1.0e-3);
+        assert!((drawOneSecond(1000) - 20.0).abs() < 1.0e-3);
     }
 }
